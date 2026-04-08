@@ -177,10 +177,9 @@ int aeron_consensus_module_agent_create(
 
     a->leader_member = NULL;
 
-    /* Ranked positions for quorum */
-    int threshold = aeron_cluster_member_quorum_threshold(a->active_member_count);
+    /* Ranked positions for quorum — needs space for all members, not just quorum threshold */
     if (aeron_alloc((void **)&a->ranked_positions,
-        (size_t)threshold * sizeof(int64_t)) < 0)
+        (size_t)a->active_member_count * sizeof(int64_t)) < 0)
     {
         AERON_APPEND_ERR("%s", "unable to allocate ranked positions");
         aeron_cluster_members_free(a->active_members, a->active_member_count);

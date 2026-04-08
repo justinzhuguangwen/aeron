@@ -41,6 +41,7 @@
 
 #include "aeron_cm_context.h"
 #include "aeron_alloc.h"
+#include "aeron_archive.h"
 #include "util/aeron_error.h"
 #include "util/aeron_parse_util.h"
 #include "aeron_agent.h"
@@ -220,6 +221,11 @@ int aeron_cm_context_close(aeron_cm_context_t *ctx)
             aeron_context_t *ac = aeron_context(ctx->aeron);
             aeron_close(ctx->aeron);
             aeron_context_close(ac);
+        }
+        if (ctx->owns_archive_ctx && NULL != ctx->archive_ctx)
+        {
+            aeron_archive_context_close(ctx->archive_ctx);
+            ctx->archive_ctx = NULL;
         }
         if (ctx->owns_mark_file && NULL != ctx->mark_file)
         {

@@ -224,9 +224,14 @@ int aeron_archiving_media_driver_close(aeron_archiving_media_driver_t *archiving
 
     if (NULL != archiving_driver->driver)
     {
+        aeron_driver_context_t *d_ctx = archiving_driver->driver_ctx;
         aeron_driver_close(archiving_driver->driver);
         archiving_driver->driver = NULL;
         archiving_driver->driver_ctx = NULL;
+        if (NULL != d_ctx)
+        {
+            aeron_driver_context_close(d_ctx);
+        }
     }
 
     aeron_free(archiving_driver);

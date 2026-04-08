@@ -461,8 +461,10 @@ int aeron_archive_server_context_close(aeron_archive_server_context_t *ctx)
 
     if (ctx->owns_aeron_client && NULL != ctx->aeron)
     {
+        aeron_context_t *aeron_ctx = aeron_context(ctx->aeron);
         aeron_close(ctx->aeron);
         ctx->aeron = NULL;
+        aeron_context_close(aeron_ctx);
     }
 
     /* Free heap-allocated channel strings */

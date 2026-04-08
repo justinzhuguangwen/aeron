@@ -155,9 +155,9 @@ cluster_server_handle_t *cluster_server_start(
     aeron_cluster_service_context_set_service_id(srv->svc_ctx, 0);
     aeron_cluster_service_context_set_control_channel(srv->svc_ctx, "aeron:ipc");
     aeron_cluster_service_context_set_consensus_module_stream_id(srv->svc_ctx, 104);
-    srv->svc_ctx->service_channel    = strdup("aeron:ipc");
+    aeron_cluster_service_context_set_service_channel(srv->svc_ctx, "aeron:ipc");
     srv->svc_ctx->service_stream_id  = 105;
-    srv->svc_ctx->snapshot_channel   = strdup("aeron:ipc");
+    aeron_cluster_service_context_set_snapshot_channel(srv->svc_ctx, "aeron:ipc");
     srv->svc_ctx->snapshot_stream_id = 107;
     srv->svc_ctx->cluster_id         = 0;
     strncpy(srv->svc_ctx->cluster_dir, cluster_dir, sizeof(srv->svc_ctx->cluster_dir) - 1);
@@ -215,9 +215,9 @@ cluster_server_handle_t *cluster_service_start(
     aeron_cluster_service_context_set_service_id(srv->svc_ctx, 0);
     aeron_cluster_service_context_set_control_channel(srv->svc_ctx, "aeron:ipc?term-length=128k");
     aeron_cluster_service_context_set_consensus_module_stream_id(srv->svc_ctx, 104);
-    srv->svc_ctx->service_channel    = strdup("aeron:ipc?term-length=128k");
+    aeron_cluster_service_context_set_service_channel(srv->svc_ctx, "aeron:ipc?term-length=128k");
     srv->svc_ctx->service_stream_id  = 105;
-    srv->svc_ctx->snapshot_channel   = strdup("aeron:ipc?term-length=128k");
+    aeron_cluster_service_context_set_snapshot_channel(srv->svc_ctx, "aeron:ipc?term-length=128k");
     srv->svc_ctx->snapshot_stream_id = 107;
     srv->svc_ctx->cluster_id         = 0;
     strncpy(srv->svc_ctx->cluster_dir, cluster_dir, sizeof(srv->svc_ctx->cluster_dir) - 1);
