@@ -203,6 +203,10 @@ static void aeron_driver_untethered_subscription_state_change_null(
 #define AERON_REJOIN_STREAM_DEFAULT (true)
 #define AERON_PUBLICATION_RESERVED_SESSION_ID_LOW_DEFAULT (-1)
 #define AERON_PUBLICATION_RESERVED_SESSION_ID_HIGH_DEFAULT (1000)
+#define AERON_DRIVER_RESOLVER_NEIGHBOR_TIMEOUT_NS_DEFAULT (UINT64_C(10) * 1000 * 1000 * 1000)
+#define AERON_DRIVER_RESOLVER_SELF_RESOLUTION_INTERVAL_NS_DEFAULT (UINT64_C(1) * 1000 * 1000 * 1000);
+#define AERON_DRIVER_RESOLVER_NEIGHBOR_RESOLUTION_INTERVAL_NS_DEFAULT (UINT64_C(2) * 1000 * 1000 * 1000)
+#define AERON_DRIVER_RESOLVER_BOOTSTRAP_NEIGHBOR_RESOLUTION_INTERVAL_NS_DEFAULT (UINT64_C(10) * 1000 * 1000 * 1000)
 #define AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT (1 * 1000 * 1000 * INT64_C(1000))
 #define AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT (100 * 1000 * INT64_C(1000))
 #define AERON_DRIVER_SENDER_CYCLE_THRESHOLD_NS_DEFAULT (100 * 1000 * INT64_C(1000))
@@ -436,6 +440,9 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->resolver_interface = NULL;
     _context->resolver_bootstrap_neighbor = NULL;
     _context->name_resolver_init_args = NULL;
+    _context->resolver_neighbor_timeout_ns = AERON_DRIVER_RESOLVER_NEIGHBOR_TIMEOUT_NS_DEFAULT;
+    _context->resolver_self_resolution_interval_ns = AERON_DRIVER_RESOLVER_SELF_RESOLUTION_INTERVAL_NS_DEFAULT;
+    _context->resolver_neighbor_resolution_interval_ns = AERON_DRIVER_RESOLVER_NEIGHBOR_RESOLUTION_INTERVAL_NS_DEFAULT;
     _context->re_resolution_check_interval_ns = AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT;
     _context->conductor_duty_cycle_stall_tracker.cycle_threshold_ns = AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT;
     _context->sender_duty_cycle_stall_tracker.cycle_threshold_ns = AERON_DRIVER_SENDER_CYCLE_THRESHOLD_NS_DEFAULT;
@@ -525,6 +532,34 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
             goto error;
         }
     }
+
+    _context->resolver_neighbor_timeout_ns = aeron_config_parse_duration_ns(
+        AERON_DRIVER_RESOLVER_NEIGHBOR_TIMEOUT_NS_ENV_VAR,
+        getenv(AERON_DRIVER_RESOLVER_NEIGHBOR_TIMEOUT_NS_ENV_VAR),
+        _context->resolver_neighbor_timeout_ns,
+        1000 * 1000,
+        INT64_MAX);
+
+    _context->resolver_self_resolution_interval_ns = aeron_config_parse_duration_ns(
+        AERON_DRIVER_RESOLVER_SELF_RESOLUTION_INTERVAL_NS_ENV_VAR,
+        getenv(AERON_DRIVER_RESOLVER_SELF_RESOLUTION_INTERVAL_NS_ENV_VAR),
+        _context->resolver_self_resolution_interval_ns,
+        1000 * 1000,
+        INT64_MAX);
+
+    _context->resolver_neighbor_resolution_interval_ns = aeron_config_parse_duration_ns(
+        AERON_DRIVER_RESOLVER_NEIGHBOR_RESOLUTION_INTERVAL_NS_ENV_VAR,
+        getenv(AERON_DRIVER_RESOLVER_NEIGHBOR_RESOLUTION_INTERVAL_NS_ENV_VAR),
+        _context->resolver_neighbor_resolution_interval_ns,
+        1000 * 1000,
+        INT64_MAX);
+
+    _context->resolver_bootstrap_neighbor_resolution_interval_ns = aeron_config_parse_duration_ns(
+        AERON_DRIVER_RESOLVER_BOOTSTRAP_NEIGHBOR_RESOLUTION_INTERVAL_NS_ENV_VAR,
+        getenv(AERON_DRIVER_RESOLVER_BOOTSTRAP_NEIGHBOR_RESOLUTION_INTERVAL_NS_ENV_VAR),
+        _context->resolver_bootstrap_neighbor_resolution_interval_ns,
+        1000 * 1000,
+        INT64_MAX);
 
     _context->dirs_delete_on_start = aeron_parse_bool(
         getenv(AERON_DIR_DELETE_ON_START_ENV_VAR), _context->dirs_delete_on_start);
@@ -2783,6 +2818,66 @@ const char *aeron_driver_context_get_name_resolver_init_args(aeron_driver_contex
 {
     return NULL != context ? context->name_resolver_init_args : NULL;
 }
+
+int aeron_driver_context_set_resolver_neighbor_timeout_ns(aeron_driver_context_t *context, uint64_t value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->resolver_neighbor_timeout_ns = value;
+    return 0;
+}
+
+uint64_t aeron_driver_context_get_resolver_neighbor_timeout_ns(aeron_driver_context_t *context)
+{
+    return NULL != context ?
+        context->resolver_neighbor_timeout_ns : AERON_DRIVER_RESOLVER_NEIGHBOR_TIMEOUT_NS_DEFAULT;
+}
+
+int aeron_driver_context_set_self_resolution_interval_ns(aeron_driver_context_t *context, uint64_t value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->resolver_self_resolution_interval_ns = value;
+    return 0;
+}
+
+uint64_t aeron_driver_context_get_self_resolution_interval_ns(aeron_driver_context_t *context)
+{
+    return NULL != context ?
+        context->resolver_self_resolution_interval_ns : AERON_DRIVER_RESOLVER_SELF_RESOLUTION_INTERVAL_NS_DEFAULT;
+}
+
+int aeron_driver_context_set_resolver_neighbor_resolution_interval_ns(aeron_driver_context_t *context, uint64_t value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->resolver_neighbor_resolution_interval_ns = value;
+    return 0;
+}
+
+uint64_t aeron_driver_context_get_resolver_neighbor_resolution_interval_ns(aeron_driver_context_t *context)
+{
+    return NULL != context ?
+        context->resolver_neighbor_resolution_interval_ns : AERON_DRIVER_RESOLVER_NEIGHBOR_RESOLUTION_INTERVAL_NS_DEFAULT;
+}
+
+int aeron_driver_context_set_resolver_bootstrap_neighbor_resolution_interval_ns(
+    aeron_driver_context_t *context,
+    uint64_t value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    context->resolver_bootstrap_neighbor_resolution_interval_ns = value;
+    return 0;
+}
+
+uint64_t aeron_driver_context_get_resolver_bootstrap_resolution_interval_ns(aeron_driver_context_t *context)
+{
+    return NULL != context ?
+        context->resolver_bootstrap_neighbor_resolution_interval_ns :
+        AERON_DRIVER_RESOLVER_BOOTSTRAP_NEIGHBOR_RESOLUTION_INTERVAL_NS_DEFAULT;
+}
+
 
 int aeron_driver_context_set_re_resolution_check_interval_ns(aeron_driver_context_t *context, uint64_t value)
 {

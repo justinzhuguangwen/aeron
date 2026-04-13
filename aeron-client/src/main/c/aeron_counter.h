@@ -34,6 +34,7 @@ typedef struct aeron_counter_stct
     aeron_notification_t on_close_complete;
     void *on_close_complete_clientd;
     volatile bool is_closed;
+    volatile bool pending_close_action;
 }
 aeron_counter_t;
 

@@ -70,38 +70,16 @@ int aeron_receive_channel_endpoint_create(
         return -1;
     }
 
-    if (aeron_data_packet_dispatcher_init(
-        &_endpoint->dispatcher, context->conductor_proxy, context->receiver_proxy->receiver) < 0)
-    {
-        AERON_APPEND_ERR("%s", "Failed to initialise data packet dispatcher");
-        return -1;
-    }
-
-    if (aeron_int64_counter_map_init(
-        &_endpoint->stream_id_to_refcnt_map, 0, 16, AERON_MAP_DEFAULT_LOAD_FACTOR) < 0)
-    {
-        AERON_APPEND_ERR("%s", "could not init stream_id_to_refcnt_map");
-        return -1;
-    }
-
-    if (aeron_int64_counter_map_init(
-        &_endpoint->stream_and_session_id_to_refcnt_map, 0, 16, AERON_MAP_DEFAULT_LOAD_FACTOR) < 0)
-    {
-        AERON_APPEND_ERR("%s", "could not init stream_and_session_id_to_refcnt_map");
-        return -1;
-    }
-
-    if (aeron_int64_counter_map_init(
-        &_endpoint->response_stream_id_to_refcnt_map, 0, 16, AERON_MAP_DEFAULT_LOAD_FACTOR) < 0)
-    {
-        AERON_APPEND_ERR("%s", "could not init response_stream_id_to_refcnt_map");
-        return -1;
-    }
-
     _endpoint->conductor_fields.managed_resource.clientd = _endpoint;
     _endpoint->conductor_fields.managed_resource.registration_id = -1;
     _endpoint->conductor_fields.status = AERON_RECEIVE_CHANNEL_ENDPOINT_STATUS_ACTIVE;
     _endpoint->conductor_fields.image_ref_count = 0;
+    _endpoint->conductor_fields.udp_channel = NULL;
+
+    _endpoint->destinations.array = NULL;
+    _endpoint->destinations.length = 0;
+    _endpoint->destinations.capacity = 0;
+
     _endpoint->channel_status.counter_id = -1;
     _endpoint->transport_bindings = context->udp_channel_transport_bindings;
 
@@ -113,12 +91,6 @@ int aeron_receive_channel_endpoint_create(
     _endpoint->receiver_id = context->next_receiver_id++;
     _endpoint->receiver_proxy = context->receiver_proxy;
 
-    if (aeron_receive_channel_endpoint_set_group_tag(_endpoint, channel, context) < 0)
-    {
-        aeron_receive_channel_endpoint_delete(NULL, _endpoint);
-        return -1;
-    }
-
     _endpoint->short_sends_counter = aeron_system_counter_addr(system_counters, AERON_SYSTEM_COUNTER_SHORT_SENDS);
     _endpoint->possible_ttl_asymmetry_counter = aeron_system_counter_addr(
         system_counters, AERON_SYSTEM_COUNTER_POSSIBLE_TTL_ASYMMETRY);
@@ -129,11 +101,44 @@ int aeron_receive_channel_endpoint_create(
 
     _endpoint->send_nak_message = context->log.send_nak_message;
 
+    if (aeron_receive_channel_endpoint_set_group_tag(_endpoint, channel, context) < 0)
+    {
+        goto error;
+    }
+
+    if (aeron_data_packet_dispatcher_init(
+        &_endpoint->dispatcher, context->conductor_proxy, context->receiver_proxy->receiver) < 0)
+    {
+        AERON_APPEND_ERR("%s", "Failed to initialise data packet dispatcher");
+        goto error;
+    }
+
+    if (aeron_int64_counter_map_init(
+        &_endpoint->stream_id_to_refcnt_map, 0, 16, AERON_MAP_DEFAULT_LOAD_FACTOR) < 0)
+    {
+        AERON_APPEND_ERR("%s", "could not init stream_id_to_refcnt_map");
+        goto error;
+    }
+
+    if (aeron_int64_counter_map_init(
+        &_endpoint->stream_and_session_id_to_refcnt_map, 0, 16, AERON_MAP_DEFAULT_LOAD_FACTOR) < 0)
+    {
+        AERON_APPEND_ERR("%s", "could not init stream_and_session_id_to_refcnt_map");
+        goto error;
+    }
+
+    if (aeron_int64_counter_map_init(
+        &_endpoint->response_stream_id_to_refcnt_map, 0, 16, AERON_MAP_DEFAULT_LOAD_FACTOR) < 0)
+    {
+        AERON_APPEND_ERR("%s", "could not init response_stream_id_to_refcnt_map");
+        goto error;
+    }
+
     if (NULL != straight_through_destination)
     {
         if (aeron_receive_channel_endpoint_add_destination(_endpoint, straight_through_destination) < 0)
         {
-            return -1;
+            goto error;
         }
     }
 
@@ -141,6 +146,10 @@ int aeron_receive_channel_endpoint_create(
     _endpoint->conductor_fields.udp_channel = channel;
     *endpoint = _endpoint;
     return 0;
+
+error:
+    aeron_receive_channel_endpoint_delete(NULL, _endpoint);
+    return -1;
 }
 
 int aeron_receive_channel_endpoint_delete(
@@ -245,7 +254,7 @@ int aeron_receive_channel_endpoint_elicit_setup(
             return -1;
         }
 
-        result += work_count;
+        work_count += result;
     }
 
     return work_count;

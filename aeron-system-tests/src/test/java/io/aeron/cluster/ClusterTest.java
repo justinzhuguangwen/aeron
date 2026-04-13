@@ -3425,11 +3425,11 @@ class ClusterTest
         final ErrorConsumer errorConsumer =
             (observationCount, firstObservationTimestamp, lastObservationTimestamp, encodedException) ->
             {
-                if (encodedException.contains("quorum position went backwards:"))
+                if (0 != observationCount && encodedException.contains("quorum position went backwards:"))
                 {
-                    found.set(true);
                     assertEquals(1, observationCount);
                     assertThat(encodedException, containsString(expectedError));
+                    found.set(true);
                 }
             };
         while (!found.get())

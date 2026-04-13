@@ -292,7 +292,7 @@ class SpySimulatedConnectionTest
     {
         launch();
 
-        final String channel = "aeron:udp?control=localhost:40456|control-mode=dynamic";
+        final String channel = "aeron:udp?control=localhost:20000|control-mode=dynamic";
 
         spy = client.addSubscription(spyForChannel(channel), STREAM_ID);
         publication = client.addExclusivePublication(channel + "|ssc=true", STREAM_ID);

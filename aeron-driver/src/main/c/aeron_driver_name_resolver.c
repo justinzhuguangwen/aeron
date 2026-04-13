@@ -91,6 +91,7 @@ typedef struct aeron_driver_name_resolver_stct
     int64_t self_resolution_interval_ms;
     int64_t neighbor_resolution_interval_ms;
     int64_t neighbor_timeout_ms;
+    int64_t bootstrap_neighbor_resolution_interval_ms;
 
     int64_t work_deadline_ms;
     int64_t bootstrap_neighbor_resolve_deadline_ms;
@@ -335,15 +336,24 @@ int aeron_driver_name_resolver_init(
         goto error_cleanup;
     }
 
-    aeron_name_resolver_cache_init(&_driver_resolver->cache, AERON_NAME_RESOLVER_DRIVER_TIMEOUT_MS);
+    const uint64_t timeout_ms = aeron_driver_context_get_resolver_neighbor_timeout_ns(context) / (1000 * 1000);
+    const uint64_t self_resolution_interval_ms =
+        aeron_driver_context_get_self_resolution_interval_ns(context) / (1000 * 1000);
+    const uint64_t neighbor_resolution_interval_ms =
+        aeron_driver_context_get_resolver_neighbor_resolution_interval_ns(context) / (1000 * 1000);
+    const uint64_t bootstrap_neighbor_resolution_interval_ms =
+        aeron_driver_context_get_resolver_bootstrap_resolution_interval_ns(context) / (1000 * 1000);
+
+    aeron_name_resolver_cache_init(&_driver_resolver->cache, timeout_ms);
 
     int64_t now_ms = context->epoch_clock();
     _driver_resolver->cached_clock = context->cached_clock;
-    _driver_resolver->neighbor_timeout_ms = AERON_NAME_RESOLVER_DRIVER_TIMEOUT_MS;
-    _driver_resolver->self_resolution_interval_ms = AERON_NAME_RESOLVER_DRIVER_SELF_RESOLUTION_INTERVAL_MS;
+    _driver_resolver->neighbor_timeout_ms = timeout_ms;
+    _driver_resolver->self_resolution_interval_ms = self_resolution_interval_ms;
     _driver_resolver->self_resolutions_deadline_ms = 0;
-    _driver_resolver->neighbor_resolution_interval_ms = AERON_NAME_RESOLVER_DRIVER_NEIGHBOUR_RESOLUTION_INTERVAL_MS;
+    _driver_resolver->neighbor_resolution_interval_ms = neighbor_resolution_interval_ms;
     _driver_resolver->neighbor_resolutions_deadline_ms = now_ms + _driver_resolver->neighbor_resolution_interval_ms;
+    _driver_resolver->bootstrap_neighbor_resolution_interval_ms = bootstrap_neighbor_resolution_interval_ms;
     _driver_resolver->bootstrap_neighbor_resolve_deadline_ms = now_ms;
     _driver_resolver->work_deadline_ms = 0;
 
@@ -777,7 +787,8 @@ static int aeron_driver_name_resolver_do_send(
     {
         char buffer[AERON_NETUTIL_FORMATTED_MAX_LENGTH] = { 0 };
         aeron_format_source_identity(buffer, AERON_NETUTIL_FORMATTED_MAX_LENGTH, neighbor_address);
-        AERON_APPEND_ERR("Failed to send resolution frames to neighbor: %s (protocol_family=%i)",
+        AERON_APPEND_ERR(
+            "Failed to send resolution frames to neighbor: %s (protocol_family=%i)",
             buffer, neighbor_address->ss_family);
     }
 
@@ -856,7 +867,8 @@ static int aeron_driver_name_resolver_send_self_resolutions(
                 return work_count;
             }
 
-            driver_resolver->bootstrap_neighbor_resolve_deadline_ms = now_ms + AERON_NAME_RESOLVER_DRIVER_TIMEOUT_MS;
+            driver_resolver->bootstrap_neighbor_resolve_deadline_ms =
+                now_ms + driver_resolver->bootstrap_neighbor_resolution_interval_ms;
 
             if (!aeron_driver_name_resolver_sockaddr_equals(&driver_resolver->bootstrap_neighbor_addr, &old_address))
             {

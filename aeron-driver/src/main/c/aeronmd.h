@@ -796,6 +796,32 @@ int aeron_driver_context_set_name_resolver_init_args(aeron_driver_context_t *con
 const char *aeron_driver_context_get_name_resolver_init_args(aeron_driver_context_t *context);
 
 /**
+ * Property name for time to wait before removing a neighbor entry from the cache if an update for that neighbor has
+ * not been received.
+ */
+#define AERON_DRIVER_RESOLVER_NEIGHBOR_TIMEOUT_NS_ENV_VAR "aeron.driver.resolver.neighbor.timeout.ns"
+int aeron_driver_context_set_resolver_neighbor_timeout_ns(aeron_driver_context_t *context, uint64_t value);
+uint64_t aeron_driver_context_get_resolver_neighbor_timeout_ns(aeron_driver_context_t *context);
+
+/**
+ * Property name for the interval between sending name to address messages for this driver to its neighbors.
+ */
+#define AERON_DRIVER_RESOLVER_SELF_RESOLUTION_INTERVAL_NS_ENV_VAR "aeron.driver.resolver.self.resolution.interval.ns"
+int aeron_driver_context_set_self_resolution_interval_ns(aeron_driver_context_t *context, uint64_t value);
+uint64_t aeron_driver_context_get_self_resolution_interval_ns(aeron_driver_context_t *context);
+
+/**
+ * Property name for the interval between sending name to address messages for all known neighbors.
+ */
+#define AERON_DRIVER_RESOLVER_NEIGHBOR_RESOLUTION_INTERVAL_NS_ENV_VAR "aeron.driver.resolver.neighbor.resolution.interval.ns"
+int aeron_driver_context_set_resolver_neighbor_resolution_interval_ns(aeron_driver_context_t *context, uint64_t value);
+uint64_t aeron_driver_context_get_resolver_neighbor_resolution_interval_ns(aeron_driver_context_t *context);
+
+#define AERON_DRIVER_RESOLVER_BOOTSTRAP_NEIGHBOR_RESOLUTION_INTERVAL_NS_ENV_VAR "aeron.driver.resolver.bootstrap.neighbor.resolution.interval.ns"
+int aeron_driver_context_set_resolver_bootstrap_neighbor_resolution_interval_ns(aeron_driver_context_t *context, uint64_t value);
+uint64_t aeron_driver_context_get_resolver_bootstrap_resolution_interval_ns(aeron_driver_context_t *context);
+
+/**
  * Specify the interval which checks for re-resolutions of names occurs.
  */
 #define AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_ENV_VAR "AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL"

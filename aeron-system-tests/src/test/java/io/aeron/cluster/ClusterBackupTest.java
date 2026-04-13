@@ -726,7 +726,7 @@ class ClusterBackupTest
                 atomicBuffer,
                 (observationCount, firstObservationTimestamp, lastObservationTimestamp, encodedException) ->
                 {
-                    if (encodedException.contains(expectedErrorMessage))
+                    if (0 != observationCount && encodedException.contains(expectedErrorMessage))
                     {
                         foundError.set(true);
                     }

@@ -63,8 +63,15 @@ int aeron_send_channel_endpoint_create(
     struct sockaddr_storage *connect_addr = NULL;
     if (aeron_udp_channel_is_multi_destination(channel))
     {
-        if (aeron_alloc((void **)&_endpoint->destination_tracker, sizeof(aeron_udp_destination_tracker_t)) < 0 ||
-            aeron_udp_destination_tracker_init(
+        if (aeron_alloc((void **)&_endpoint->destination_tracker, sizeof(aeron_udp_destination_tracker_t)) < 0)
+        {
+            AERON_APPEND_ERR("%s", "");
+            aeron_udp_channel_delete(channel);
+            aeron_free(_endpoint);
+            return -1;
+        }
+
+        if (aeron_udp_destination_tracker_init(
                 _endpoint->destination_tracker,
                 _endpoint->data_paths,
                 context->sender_cached_clock,
@@ -73,6 +80,7 @@ int aeron_send_channel_endpoint_create(
         {
             AERON_APPEND_ERR("%s", "");
             aeron_udp_channel_delete(channel);
+            aeron_free(_endpoint->destination_tracker);
             aeron_free(_endpoint);
             return -1;
         }
@@ -107,8 +115,7 @@ int aeron_send_channel_endpoint_create(
         channel->is_multicast ? &channel->remote_control : &channel->local_control) < 0)
     {
         AERON_APPEND_ERR("uri=%s", channel->original_uri);
-        aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
-        return -1;
+        goto error;
     }
 
     _endpoint->port_manager = context->sender_port_manager;
@@ -132,8 +139,7 @@ int aeron_send_channel_endpoint_create(
         AERON_UDP_CHANNEL_TRANSPORT_AFFINITY_SENDER) < 0)
     {
         AERON_APPEND_ERR("uri=%s", channel->original_uri);
-        aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
-        return -1;
+        goto error;
     }
 
     if (aeron_udp_channel_is_channel_snd_timestamps_enabled(channel))
@@ -144,16 +150,14 @@ int aeron_send_channel_endpoint_create(
     if (aeron_int64_to_ptr_hash_map_init(
         &_endpoint->publication_dispatch_map, 8, AERON_MAP_DEFAULT_LOAD_FACTOR) < 0)
     {
-        aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
-        return -1;
+        goto error;
     }
 
     if ((bind_addr_and_port_length = aeron_send_channel_endpoint_bind_addr_and_port(
         _endpoint, bind_addr_and_port, sizeof(bind_addr_and_port))) < 0)
     {
         AERON_APPEND_ERR("%s", "");
-        aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
-        return -1;
+        goto error;
     }
 
     _endpoint->transport.dispatch_clientd = _endpoint;
@@ -167,8 +171,7 @@ int aeron_send_channel_endpoint_create(
     if (_endpoint->channel_status.counter_id < 0)
     {
         AERON_APPEND_ERR("%s", "");
-        aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
-        return -1;
+        goto error;
     }
 
     _endpoint->on_nak_message = context->log.on_nak_message;
@@ -188,8 +191,7 @@ int aeron_send_channel_endpoint_create(
         if (_endpoint->tracker_num_destinations.counter_id < 0)
         {
             AERON_APPEND_ERR("%s", "");
-            aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
-            return -1;
+            goto error;
         }
 
         aeron_udp_destination_tracker_set_counter(
@@ -218,8 +220,7 @@ int aeron_send_channel_endpoint_create(
     if (_endpoint->local_sockaddr_indicator.counter_id < 0)
     {
         AERON_APPEND_ERR("%s", "");
-        aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
-        return -1;
+        goto error;
     }
 
     aeron_counter_set_release(
@@ -232,6 +233,10 @@ int aeron_send_channel_endpoint_create(
 
     *endpoint = _endpoint;
     return 0;
+
+error:
+    aeron_send_channel_endpoint_delete(counters_manager, _endpoint);
+    return -1;
 }
 
 int aeron_send_channel_endpoint_delete(

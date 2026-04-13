@@ -100,7 +100,7 @@ public final class Counter extends AtomicCounter
             super.close();
             if (null != clientConductor)
             {
-                clientConductor.releaseCounter(this);
+                clientConductor.removeCounter(this);
             }
         }
     }

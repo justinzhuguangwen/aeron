@@ -585,7 +585,7 @@ TEST_F(NameResolverTest, shouldUseAnotherNeighborIfCurrentBecomesUnavailable)
     close(&m_a);
     m_a.context = nullptr;
 
-    timestamp_ms += AERON_NAME_RESOLVER_DRIVER_TIMEOUT_MS;
+    timestamp_ms += aeron_driver_context_get_resolver_neighbor_timeout_ns(m_a.context);
 
     unresolvable_address = "localhost:8050"; // ensure that A is now unresolvable
 
@@ -663,10 +663,10 @@ TEST_F(NameResolverTest, shouldTimeoutNeighbor)
     ASSERT_EQ(1, readCacheEntriesCounter(&m_a));
     ASSERT_EQ(1, readNeighborCounter(&m_a));
 
-    timestamp_ms += AERON_NAME_RESOLVER_DRIVER_TIMEOUT_MS;
+    timestamp_ms += aeron_driver_context_get_resolver_neighbor_timeout_ns(m_a.context);
     timestamp_ms += 2000;
 
-    // B's not pushed it self resolution recently enough
+    // B's not pushed if self resolution recently enough
     ASSERT_LT(0, m_a.resolver.do_work_func(&m_a.resolver, timestamp_ms));
 
     ASSERT_EQ(-1, m_a.resolver.resolve_func(&m_a.resolver, "B", "endpoint", false, &address));

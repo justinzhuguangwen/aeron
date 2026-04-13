@@ -531,7 +531,7 @@ TEST_F(PubSubTest, DISABLED_shouldError)
     std::int32_t initialTermId = 3;
     std::int32_t termOffset = 1024;
     ChannelUriStringBuilder uriBuilder;
-    const std::string channel = setParameters("udp", "224.0.1.1:40456", uriBuilder)
+    const std::string channel = setParameters("udp", "224.0.1.1:20000", uriBuilder)
         .termId(termId)
         .termOffset(termOffset)
         .initialTermId(initialTermId)

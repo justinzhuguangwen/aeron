@@ -655,10 +655,10 @@ final class ClientConductor implements Agent
                 return;
             }
 
+            ensureNotReentrant();
+
             if (!publication.isClosed())
             {
-                ensureNotReentrant();
-
                 publication.internalClose();
                 if (publication == resourceByRegIdMap.remove(publication.registrationId()))
                 {
@@ -823,10 +823,10 @@ final class ClientConductor implements Agent
                 return;
             }
 
+            ensureNotReentrant();
+
             if (!subscription.isClosed())
             {
-                ensureNotReentrant();
-
                 subscription.internalClose(EXPLICIT_CLOSE_LINGER_NS);
                 final long registrationId = subscription.registrationId();
                 if (subscription == resourceByRegIdMap.remove(registrationId))
@@ -1599,7 +1599,7 @@ final class ClientConductor implements Agent
         }
     }
 
-    void releaseCounter(final Counter counter)
+    void removeCounter(final Counter counter)
     {
         clientLock.lock();
         try
