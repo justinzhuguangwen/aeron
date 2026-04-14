@@ -1080,7 +1080,14 @@ int aeron_consensus_module_agent_close(aeron_consensus_module_agent_t *agent)
         {
             aeron_archive_close(agent->archive);
         }
-        aeron_free(agent->pending_trackers);
+        if (NULL != agent->pending_trackers)
+        {
+            for (int i = 0; i < agent->service_count; i++)
+            {
+                aeron_cluster_pending_message_tracker_close(&agent->pending_trackers[i]);
+            }
+            aeron_free(agent->pending_trackers);
+        }
         aeron_free(agent->uncommitted_timers);
         aeron_free(agent->uncommitted_previous_states);
 

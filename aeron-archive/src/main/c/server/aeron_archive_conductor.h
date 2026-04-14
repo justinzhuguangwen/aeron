@@ -130,6 +130,7 @@ typedef struct aeron_archive_recording_subscription_entry_stct
 {
     char *key;
     aeron_subscription_t *subscription;
+    aeron_async_add_subscription_t *async;
     int64_t ref_count;
 }
 aeron_archive_recording_subscription_entry_t;

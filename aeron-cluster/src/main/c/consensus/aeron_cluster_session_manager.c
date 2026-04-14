@@ -1180,6 +1180,7 @@ int aeron_cluster_session_manager_check_timeouts(
         {
             on_timeout(clientd, session);
             manager->sessions[i] = manager->sessions[--manager->session_count];
+            aeron_cluster_cluster_session_close_and_free(session);
             count++;
         }
     }

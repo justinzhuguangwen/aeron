@@ -722,6 +722,27 @@ int aeron_archive_conductor_do_work(aeron_archive_conductor_t *conductor)
         }
     }
 
+    /* Poll async recording subscription handles until resolved */
+    for (int32_t i = 0; i < conductor->recording_subscription_count; i++)
+    {
+        aeron_archive_recording_subscription_entry_t *entry = &conductor->recording_subscriptions[i];
+        if (NULL != entry->async && NULL == entry->subscription)
+        {
+            aeron_subscription_t *sub = NULL;
+            int rc = aeron_async_add_subscription_poll(&sub, entry->async);
+            if (rc > 0 && NULL != sub)
+            {
+                entry->subscription = sub;
+                entry->async = NULL;
+                work_count++;
+            }
+            else if (rc < 0)
+            {
+                entry->async = NULL;
+            }
+        }
+    }
+
     /* Drive active recording sessions */
     work_count += aeron_archive_conductor_drive_recording_sessions(conductor);
 
@@ -1039,6 +1060,7 @@ int aeron_archive_conductor_start_recording(
         &conductor->recording_subscriptions[conductor->recording_subscription_count];
     entry->key = key;
     entry->subscription = NULL;  /* Will be resolved from async add */
+    entry->async = async;
     entry->ref_count = 1;
     conductor->recording_subscription_count++;
 

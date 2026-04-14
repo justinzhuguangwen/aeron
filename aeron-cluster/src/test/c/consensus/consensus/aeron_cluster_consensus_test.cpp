@@ -838,6 +838,11 @@ protected:
     {
         aeron_cluster_pending_message_tracker_init(&m_tracker, svc, next_id, log_id, cap);
     }
+
+    void TearDown() override
+    {
+        aeron_cluster_pending_message_tracker_close(&m_tracker);
+    }
 };
 
 TEST_F(PendingMessageTrackerTest, shouldAppendOnlyUncommittedMessages)
@@ -2521,6 +2526,16 @@ protected:
             free(m_agent->ranked_positions);
             free(m_agent->service_ack_positions);
             free(m_agent->service_snapshot_recording_ids);
+            free(m_agent->uncommitted_timers);
+            free(m_agent->uncommitted_previous_states);
+            if (NULL != m_agent->pending_trackers)
+            {
+                for (int i = 0; i < m_agent->service_count; i++)
+                {
+                    aeron_cluster_pending_message_tracker_close(&m_agent->pending_trackers[i]);
+                }
+                free(m_agent->pending_trackers);
+            }
             free(m_agent);
             m_agent = nullptr;
         }
@@ -2696,7 +2711,7 @@ TEST_F(ConsensusModuleAgentTest, onElectionCompleteRestoresUncommittedTimers)
     /* Add a fake uncommitted timer beyond commit position */
     if (nullptr == m_agent->uncommitted_timers)
     {
-        m_agent->uncommitted_timers = new int64_t[2];
+        m_agent->uncommitted_timers = static_cast<int64_t *>(malloc(2 * sizeof(int64_t)));
         m_agent->uncommitted_timers_capacity = 1;
     }
     m_agent->uncommitted_timers[0] = 200; /* appendPos > commitPos */
