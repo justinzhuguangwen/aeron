@@ -243,6 +243,15 @@ int aeron_consensus_module_agent_create(
     return 0;
 }
 
+/* Mirrors Java CountedErrorHandler: logs the error but does not call exit().
+ * The default aeron_default_error_handler calls exit(EXIT_FAILURE) which is
+ * inappropriate for cluster components that manage their own lifecycle. */
+static void aeron_cm_logging_error_handler(void *clientd, int errcode, const char *message)
+{
+    (void)clientd;
+    fprintf(stderr, "WARNING: (%d): %s\n", errcode, message);
+}
+
 int aeron_consensus_module_agent_on_start(aeron_consensus_module_agent_t *agent)
 {
     aeron_cm_context_t *ctx = agent->ctx;
@@ -267,6 +276,15 @@ int aeron_consensus_module_agent_on_start(aeron_consensus_module_agent_t *agent)
             AERON_APPEND_ERR("%s", "");
             return -1;
         }
+
+        /* Mirrors Java ConsensusModule.Context.conclude():
+         * aeron.context().errorHandler(countedErrorHandler)
+         * Override the default error handler (which calls exit) with the CM's handler. */
+        aeron_error_handler_t handler = NULL != ctx->error_handler
+            ? ctx->error_handler : aeron_cm_logging_error_handler;
+        void *handler_clientd = NULL != ctx->error_handler
+            ? ctx->error_handler_clientd : NULL;
+        aeron_context_set_error_handler(aeron_ctx, handler, handler_clientd);
 
         agent->aeron = ctx->aeron;
     }

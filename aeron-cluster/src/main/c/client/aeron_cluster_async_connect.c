@@ -79,7 +79,7 @@ static int aeron_cluster_async_connect_transition_to_done(
     aeron_cluster_t **cluster,
     aeron_cluster_async_connect_t *async);
 
-static int aeron_cluster_async_connect_delete(aeron_cluster_async_connect_t *async);
+int aeron_cluster_async_connect_delete(aeron_cluster_async_connect_t *async);
 
 /* -----------------------------------------------------------------------
  * Public: step accessor
@@ -550,7 +550,7 @@ static int aeron_cluster_async_connect_transition_to_done(
 /* -----------------------------------------------------------------------
  * Cleanup helper — frees all resources not yet transferred.
  * ----------------------------------------------------------------------- */
-static int aeron_cluster_async_connect_delete(aeron_cluster_async_connect_t *async)
+int aeron_cluster_async_connect_delete(aeron_cluster_async_connect_t *async)
 {
     if (NULL == async)
     {

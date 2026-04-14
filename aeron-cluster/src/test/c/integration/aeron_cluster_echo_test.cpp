@@ -135,6 +135,7 @@ TEST_F(ClusterEchoTest, shouldAttemptClientConnectToCluster)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     if (cluster_client) { aeron_cluster_close(cluster_client); m_client = nullptr; }
+    else { aeron_cluster_async_connect_delete(async_conn); }
 }
 
 /* -----------------------------------------------------------------------
@@ -142,10 +143,7 @@ TEST_F(ClusterEchoTest, shouldAttemptClientConnectToCluster)
  * Server creates its own Aeron clients from aeron_dir.
  * Client creates its own Aeron client from aeron_dir.
  * ----------------------------------------------------------------------- */
-/* DISABLED: The in-process C archive server has a double-free bug in
- * aeron_archive_control_session_do_work -> aeron_async_resource_poll
- * when an archive client connects via IPC. Re-enable once fixed. */
-TEST_F(ClusterEchoTest, DISABLED_shouldEchoMessageEndToEnd)
+TEST_F(ClusterEchoTest, shouldEchoMessageEndToEnd)
 {
     /* Start server -- creates its own Aeron clients internally */
     cluster_server_handle_t *srv = cluster_server_start(

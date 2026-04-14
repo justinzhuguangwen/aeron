@@ -39,6 +39,12 @@ uint8_t aeron_cluster_async_connect_step(aeron_cluster_async_connect_t *async);
  */
 int aeron_cluster_async_connect_poll(aeron_cluster_t **cluster, aeron_cluster_async_connect_t *async);
 
+/**
+ * Delete an async connect that did not complete.
+ * Frees all resources not yet transferred to a cluster client.
+ */
+int aeron_cluster_async_connect_delete(aeron_cluster_async_connect_t *async);
+
 
 #ifdef __cplusplus
 }
