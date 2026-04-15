@@ -134,20 +134,6 @@ static void election_broadcast_canvass(aeron_cluster_election_t *e,
     }
 }
 
-static void election_broadcast_request_vote(aeron_cluster_election_t *e,
-    int64_t log_leadership_term_id, int64_t log_position,
-    int64_t candidate_term_id, int32_t candidate_member_id)
-{
-    for (int i = 0; i < e->member_count; i++)
-    {
-        if (e->members[i].id != e->this_member->id)
-        {
-            e->pub_ops.request_vote(e->pub_ops.clientd, &e->members[i],
-                log_leadership_term_id, log_position,
-                candidate_term_id, candidate_member_id);
-        }
-    }
-}
 
 static void election_broadcast_new_leadership_term(aeron_cluster_election_t *e,
     int64_t log_leadership_term_id, int64_t next_leadership_term_id,
@@ -189,16 +175,6 @@ static void election_broadcast_commit_position(aeron_cluster_election_t *e,
 static bool is_quorum(int count, int member_count)
 {
     return count >= (member_count / 2 + 1);
-}
-
-static bool is_better_candidate(
-    aeron_cluster_election_t *e,
-    int64_t log_leadership_term_id,
-    int64_t log_position)
-{
-    if (log_leadership_term_id > e->log_leadership_term_id) { return true; }
-    if (log_leadership_term_id == e->log_leadership_term_id && log_position > e->log_position) { return true; }
-    return false;
 }
 
 /* -----------------------------------------------------------------------
@@ -1336,29 +1312,38 @@ void aeron_cluster_election_on_request_vote(aeron_cluster_election_t *e,
         e->members, e->member_count, candidate_member_id);
     if (NULL == candidate) { return; }
 
-    /* Vote YES if candidate has higher term and their log is at least as up-to-date as ours */
-    bool log_ok = (log_leadership_term_id > e->log_leadership_term_id) ||
-                  (log_leadership_term_id == e->log_leadership_term_id &&
-                   log_position >= e->log_position);
-    bool vote = (candidate_term_id > e->candidate_term_id) && log_ok;
-
-    if (vote)
+    /* Java Election.onRequestVote(): 3-branch structure */
+    if (candidate_term_id <= e->candidate_term_id)
     {
-        e->candidate_term_id = candidate_term_id;
+        /* Branch 1: stale term — vote NO */
+        e->pub_ops.vote(e->pub_ops.clientd, candidate,
+            candidate_term_id, e->log_leadership_term_id, e->append_position,
+            candidate_member_id, e->this_member->id, false);
     }
-
-    /* Java: placeVote() sends voter's own logLeadershipTermId + appendPosition */
-    e->pub_ops.vote(e->pub_ops.clientd, candidate,
-        candidate_term_id, e->log_leadership_term_id, e->append_position,
-        candidate_member_id, e->this_member->id, vote);
-
-    /* Transition to FOLLOWER_BALLOT if voted YES from any pre-leader state.
-     * Mirrors Java: CANVASS || NOMINATE || CANDIDATE_BALLOT || FOLLOWER_BALLOT */
-    if (vote && (e->state == AERON_ELECTION_CANVASS ||
-                 e->state == AERON_ELECTION_NOMINATE ||
-                 e->state == AERON_ELECTION_CANDIDATE_BALLOT ||
-                 e->state == AERON_ELECTION_FOLLOWER_BALLOT))
+    else if (aeron_cluster_member_compare_log_terms(
+                 e->log_leadership_term_id, e->append_position,
+                 log_leadership_term_id, log_position) > 0)
     {
+        /* Branch 2: compareLog(ours, candidate) > 0 — our log is better — vote NO,
+         * but update candidateTermId (Java: proposeMaxCandidateTermId). */
+        e->candidate_term_id = candidate_term_id;
+
+        e->pub_ops.vote(e->pub_ops.clientd, candidate,
+            candidate_term_id, e->log_leadership_term_id, e->append_position,
+            candidate_member_id, e->this_member->id, false);
+    }
+    else if (e->state == AERON_ELECTION_CANVASS ||
+             e->state == AERON_ELECTION_NOMINATE ||
+             e->state == AERON_ELECTION_CANDIDATE_BALLOT ||
+             e->state == AERON_ELECTION_FOLLOWER_BALLOT)
+    {
+        /* Branch 3: candidate has equal or better log, voting state — vote YES */
+        e->candidate_term_id = candidate_term_id;
+
+        e->pub_ops.vote(e->pub_ops.clientd, candidate,
+            candidate_term_id, e->log_leadership_term_id, e->append_position,
+            candidate_member_id, e->this_member->id, true);
+
         transition_to(e, AERON_ELECTION_FOLLOWER_BALLOT, e->now_ns);
     }
 }
