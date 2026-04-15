@@ -26,6 +26,7 @@
 #include "concurrent/aeron_thread.h"
 #include "aeron_archive_conductor.h"
 #include "aeron_archive_control_session.h"
+#include "aeron_client_conductor.h"
 #include "aeron_archive_control_session_adapter.h"
 #include "aeron_archive_control_response_proxy.h"
 
@@ -786,6 +787,13 @@ int aeron_archive_conductor_close(aeron_archive_conductor_t *conductor)
         if (NULL != conductor->recording_subscriptions[i].subscription)
         {
             aeron_subscription_close(conductor->recording_subscriptions[i].subscription, NULL, NULL);
+        }
+        else if (NULL != conductor->recording_subscriptions[i].async)
+        {
+            /* Async add was started but never completed — free the pending async resource. */
+            aeron_async_add_subscription_t *pending = conductor->recording_subscriptions[i].async;
+            aeron_free((void *)pending->uri);
+            aeron_free(pending);
         }
         aeron_free(conductor->recording_subscriptions[i].key);
     }

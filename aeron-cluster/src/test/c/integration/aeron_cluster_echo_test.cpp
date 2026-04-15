@@ -135,7 +135,14 @@ TEST_F(ClusterEchoTest, shouldAttemptClientConnectToCluster)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     if (cluster_client) { aeron_cluster_close(cluster_client); m_client = nullptr; }
-    else { aeron_cluster_async_connect_delete(async_conn); }
+    else
+    {
+        aeron_cluster_async_connect_delete(async_conn);
+        /* The duplicate ctx inside async_conn already closed the shared aeron client.
+         * Null it out in the original ctx to prevent double-free in TearDown. */
+        m_client_ctx->aeron = nullptr;
+        m_client_ctx->owns_aeron_client = false;
+    }
 }
 
 /* -----------------------------------------------------------------------

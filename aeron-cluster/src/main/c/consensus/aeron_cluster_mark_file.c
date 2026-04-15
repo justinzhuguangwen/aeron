@@ -77,21 +77,40 @@ bool aeron_cluster_mark_file_is_active(const char *path, int64_t now_ms, int64_t
     int fd = open(path, O_RDONLY);
     if (fd < 0) { return false; }
 
+    const size_t needed = AERON_CLUSTER_MARK_FILE_ACTIVITY_TIMESTAMP_OFFSET + 8;
+
+#if defined(_MSC_VER)
+    /* Windows: open()+read() may not see mmap writes. Use memory mapping for consistent reads. */
+    HANDLE hmap = CreateFileMapping((HANDLE)_get_osfhandle(fd), NULL, PAGE_READONLY, 0, 0, NULL);
+    if (NULL == hmap) { close(fd); return false; }
+    const uint8_t *mapped = (const uint8_t *)MapViewOfFile(hmap, FILE_MAP_READ, 0, 0, needed);
+    CloseHandle(hmap);
+    if (NULL == mapped) { close(fd); return false; }
+
+    int32_t version;
+    memcpy(&version, mapped + AERON_CLUSTER_MARK_FILE_VERSION_OFFSET, 4);
+
+    int64_t activity_ms;
+    memcpy(&activity_ms, mapped + AERON_CLUSTER_MARK_FILE_ACTIVITY_TIMESTAMP_OFFSET, 8);
+
+    UnmapViewOfFile(mapped);
+    close(fd);
+#else
     uint8_t buf[AERON_CLUSTER_MARK_FILE_VERSION_OFFSET + 8 +
                 AERON_CLUSTER_MARK_FILE_ACTIVITY_TIMESTAMP_OFFSET + 8];
     memset(buf, 0, sizeof(buf));
 
-    /* Read just the version and activity timestamp area */
-    const size_t needed = AERON_CLUSTER_MARK_FILE_ACTIVITY_TIMESTAMP_OFFSET + 8;
     if ((size_t)read(fd, buf, needed) < needed) { close(fd); return false; }
     close(fd);
 
     int32_t version;
     memcpy(&version, buf + AERON_CLUSTER_MARK_FILE_VERSION_OFFSET, 4);
-    if (version <= 0) { return false; }
 
     int64_t activity_ms;
     memcpy(&activity_ms, buf + AERON_CLUSTER_MARK_FILE_ACTIVITY_TIMESTAMP_OFFSET, 8);
+#endif
+
+    if (version <= 0) { return false; }
     return (now_ms - activity_ms) < timeout_ms;
 }
 

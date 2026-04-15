@@ -314,10 +314,11 @@ TEST_F(ThreeNodeClusterTest, shouldFailoverWhenLeaderStopped)
             << "Failed to create agent " << i << ": " << aeron_errmsg();
     }
 
-    /* Phase 1: Drive election until a leader emerges */
+    /* Phase 1: Drive election until a leader emerges.
+     * With appointed=-1 all nodes compete; allow enough cycles for jitter to resolve. */
     int64_t now_ns = aeron_nano_clock();
     int leader_idx = -1;
-    for (int tick = 0; tick < 500; tick++)
+    for (int tick = 0; tick < 2000; tick++)
     {
         now_ns += INT64_C(20000000);
         for (int i = 0; i < NODE_COUNT; i++)
