@@ -98,6 +98,7 @@ struct aeron_consensus_module_agent_stct
     int64_t  leader_heartbeat_timeout_ns;
     int64_t  session_timeout_ns;
     int64_t  time_of_last_log_update_ns;
+    int64_t  time_of_last_leader_update_ns;
     int64_t  last_do_work_ns;  /* last now_ns passed to do_work — for consistent time in handlers */
     int64_t  time_of_last_append_position_send_ns;
     int64_t  slow_tick_deadline_ns;

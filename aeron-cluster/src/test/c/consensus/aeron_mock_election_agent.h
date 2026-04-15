@@ -274,6 +274,8 @@ static void init_mock_agent_ops(aeron_cluster_election_agent_ops_t *ops,
     ops->on_follower_new_leadership_term = mock_on_follower_new_leadership_term;
     ops->on_replay_new_leadership_term   = mock_on_replay_new_leadership_term;
     ops->notify_commit_position          = mock_notify_commit_position;
+    ops->set_role                        = [](void *, aeron_cluster_role_t) {};
+    ops->time_of_last_leader_update_ns   = [](void *) -> int64_t { return 0; };
 
     /* Phase 1.5 stubs — return sensible defaults so tests pass unchanged */
     ops->quorum_position = [](void *cd, int64_t ap, int64_t) -> int64_t {

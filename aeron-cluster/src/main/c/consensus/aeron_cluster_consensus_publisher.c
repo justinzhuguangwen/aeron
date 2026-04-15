@@ -36,10 +36,9 @@
 static uint8_t g_buf[AERON_CLUSTER_CONSENSUS_PUBLISHER_BUFFER_LENGTH];
 
 static bool pub_offer(aeron_exclusive_publication_t *pub,
-                      size_t body_length)
+                      size_t length)
 {
-    const size_t total = aeron_cluster_client_messageHeader_encoded_length() + body_length;
-    int64_t result = aeron_exclusive_publication_offer(pub, g_buf, total, NULL, NULL);
+    int64_t result = aeron_exclusive_publication_offer(pub, g_buf, length, NULL, NULL);
     return result > 0;
 }
 

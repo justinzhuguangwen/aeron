@@ -238,6 +238,10 @@ static void real_on_replay_new_leadership_term(void *cd,
     term_id, log_pos, ts, base, 0 /* time_unit unknown here */, app_ver); }
 static void real_notify_commit_position(void *cd, int64_t pos)
 { aeron_consensus_module_agent_notify_commit_position((aeron_consensus_module_agent_t *)cd, pos); }
+static void real_set_role(void *cd, aeron_cluster_role_t role)
+{ ((aeron_consensus_module_agent_t *)cd)->role = role; }
+static int64_t real_time_of_last_leader_update_ns(void *cd)
+{ return ((aeron_consensus_module_agent_t *)cd)->time_of_last_leader_update_ns; }
 
 /* --- Phase 1.5 real wrappers --- */
 static int64_t real_quorum_position(void *cd, int64_t ap, int64_t now_ns)
@@ -370,6 +374,8 @@ void aeron_cluster_election_agent_ops_init_real(
     ops->on_follower_new_leadership_term = real_on_follower_new_leadership_term;
     ops->on_replay_new_leadership_term   = real_on_replay_new_leadership_term;
     ops->notify_commit_position          = real_notify_commit_position;
+    ops->set_role                        = real_set_role;
+    ops->time_of_last_leader_update_ns   = real_time_of_last_leader_update_ns;
 
     /* Phase 1.5 callbacks */
     ops->quorum_position                          = real_quorum_position;
@@ -405,10 +411,60 @@ void aeron_cluster_election_agent_ops_init_real(
     ops->agent_state                              = real_agent_state;
 }
 
+/* Mirrors Java Election.state() — state transitions with side effects. */
+static void reset_members(aeron_cluster_election_t *e)
+{
+    for (int i = 0; i < e->member_count; i++)
+    {
+        e->members[i].candidate_term_id = -1;
+        e->members[i].log_position      = -1;
+        e->members[i].leadership_term_id = -1;
+    }
+    e->this_member->log_position      = e->log_position;
+    e->this_member->leadership_term_id = e->log_leadership_term_id;
+    e->leader_member = NULL;
+}
+
 static void transition_to(aeron_cluster_election_t *e,
                            aeron_cluster_election_state_t new_state,
                            int64_t now_ns)
 {
+    /* Leaving CANVASS: clear extended canvass flag (Java: isExtendedCanvass = false) */
+    if (AERON_ELECTION_CANVASS == e->state && AERON_ELECTION_CANVASS != new_state)
+    {
+        e->is_extended_canvass = false;
+    }
+
+    /* Entering CANVASS: reset members and set role to FOLLOWER */
+    if (AERON_ELECTION_CANVASS == new_state)
+    {
+        reset_members(e);
+        e->agent_ops.set_role(e->agent_ops.clientd, AERON_CLUSTER_ROLE_FOLLOWER);
+    }
+
+    /* Entering CANDIDATE_BALLOT: set role to CANDIDATE */
+    if (AERON_ELECTION_CANDIDATE_BALLOT == new_state)
+    {
+        e->agent_ops.set_role(e->agent_ops.clientd, AERON_CLUSTER_ROLE_CANDIDATE);
+    }
+
+    /* Entering LEADER_LOG_REPLICATION: set role to LEADER */
+    if (AERON_ELECTION_LEADER_LOG_REPLICATION == new_state)
+    {
+        e->agent_ops.set_role(e->agent_ops.clientd, AERON_CLUSTER_ROLE_LEADER);
+    }
+
+    /* Entering FOLLOWER_LOG_REPLICATION or FOLLOWER_REPLAY: set role to FOLLOWER */
+    if (AERON_ELECTION_FOLLOWER_LOG_REPLICATION == new_state ||
+        AERON_ELECTION_FOLLOWER_REPLAY == new_state)
+    {
+        e->agent_ops.set_role(e->agent_ops.clientd, AERON_CLUSTER_ROLE_FOLLOWER);
+    }
+
+    /* Reset timers on every state change (Java: timeOfLastUpdateNs = initialTimeOfLastUpdateNs) */
+    e->time_of_last_update_ns = e->initial_time_of_last_update_ns;
+    e->time_of_last_commit_position_update_ns = e->initial_time_of_last_update_ns;
+
     e->state                  = new_state;
     e->time_of_state_change_ns = now_ns;
     e->agent_ops.on_state_change(e->agent_ops.clientd, new_state, now_ns);
@@ -447,67 +503,47 @@ static int do_init(aeron_cluster_election_t *e, int64_t now_ns)
     return 1;
 }
 
+/* Mirrors Java Election.canvass() */
 static int do_canvass(aeron_cluster_election_t *e, int64_t now_ns)
 {
+    int work_count = 0;
+
     /* Broadcast our position to all peers */
     if ((now_ns - e->time_of_last_update_ns) >= e->election_status_interval_ns)
     {
+        e->time_of_last_update_ns = now_ns;
         election_broadcast_canvass(e,
-            e->log_leadership_term_id, e->log_position,
+            e->log_leadership_term_id, e->append_position,
             e->leadership_term_id, e->this_member->id,
             e->agent_ops.get_protocol_version(e->agent_ops.clientd));
-        e->time_of_last_update_ns = now_ns;
+        work_count++;
     }
 
-    /* Count how many have reported canvass positions */
-    int canvassed = 0;
-    for (int i = 0; i < e->member_count; i++)
+    /* If an appointed leader is set and we are not it, stay in canvass. */
+    if (e->appointed_leader_id >= 0 && e->appointed_leader_id != e->this_member->id)
     {
-        if (e->members[i].log_position >= 0) { canvassed++; }
+        return work_count;
     }
 
-    bool has_quorum = is_quorum(canvassed, e->member_count);
-    bool timed_out  = (now_ns - e->time_of_state_change_ns) >= e->startup_canvass_timeout_ns;
+    /* Java: isExtendedCanvass ? startupCanvassTimeout : timeOfLastLeaderUpdate + leaderHeartbeatTimeout */
+    int64_t deadline_ns = e->is_extended_canvass
+        ? e->time_of_state_change_ns + e->startup_canvass_timeout_ns
+        : e->agent_ops.time_of_last_leader_update_ns(e->agent_ops.clientd) + e->leader_heartbeat_timeout_ns;
 
-    if (has_quorum || timed_out)
+    if (aeron_cluster_member_is_unanimous_candidate(
+            e->members, e->member_count, e->this_member, e->graceful_closed_leader_id) ||
+        (now_ns >= deadline_ns &&
+         aeron_cluster_member_is_quorum_candidate_for(
+            e->members, e->member_count, e->this_member)))
     {
-        /* If an appointed leader is set and we are not it, stay in canvass.
-         * Mirrors Java: if (ctx.appointedLeaderId() != NULL_VALUE && ctx.appointedLeaderId() != thisMember.id()) return; */
-        if (e->appointed_leader_id >= 0 && e->appointed_leader_id != e->this_member->id)
-        {
-            return 0;
-        }
-
-        /* Check if we are the best candidate */
-        bool is_best = true;
-        for (int i = 0; i < e->member_count; i++)
-        {
-            if (e->members[i].id == e->this_member->id) { continue; }
-            if (is_better_candidate(e,
-                e->members[i].leadership_term_id,
-                e->members[i].log_position))
-            {
-                is_best = false;
-                break;
-            }
-        }
-
-        if (is_best)
-        {
-            /* Set nomination deadline with randomized jitter [0, electionTimeoutNs/2) */
-            int64_t half_timeout = e->election_timeout_ns >> 1;
-            int64_t delay_ns = half_timeout > 0 ? (int64_t)(rand() % (int)half_timeout) : 0;
-            e->nomination_deadline_ns = now_ns + delay_ns;
-            transition_to(e, AERON_ELECTION_NOMINATE, now_ns);
-        }
-        else
-        {
-            transition_to(e, AERON_ELECTION_FOLLOWER_BALLOT, now_ns);
-        }
-        return 1;
+        int64_t half_timeout = e->election_timeout_ns >> 1;
+        int64_t delay_ns = half_timeout > 0 ? (int64_t)(rand() % (int)half_timeout) : 0;
+        e->nomination_deadline_ns = now_ns + delay_ns;
+        transition_to(e, AERON_ELECTION_NOMINATE, now_ns);
+        work_count++;
     }
 
-    return 0;
+    return work_count;
 }
 
 static int do_nominate(aeron_cluster_election_t *e, int64_t now_ns)
@@ -516,13 +552,22 @@ static int do_nominate(aeron_cluster_election_t *e, int64_t now_ns)
     {
         e->candidate_term_id++;
 
-        /* Vote for self */
-        e->this_member->candidate_term_id = e->candidate_term_id;
+        /* Java: ClusterMember.becomeCandidate(clusterMembers, candidateTermId, thisMember.id()) */
+        aeron_cluster_members_become_candidate(
+            e->members, e->member_count, e->candidate_term_id, e->this_member->id);
 
-        /* Request votes from all peers */
-        election_broadcast_request_vote(e,
-            e->log_leadership_term_id, e->log_position,
-            e->candidate_term_id, e->this_member->id);
+        /* Java: requestVoteFrom(clusterMembers) — per-member send with is_ballot_sent tracking */
+        for (int i = 0; i < e->member_count; i++)
+        {
+            aeron_cluster_member_t *m = &e->members[i];
+            if (!m->is_ballot_sent)
+            {
+                bool sent = e->pub_ops.request_vote(e->pub_ops.clientd, m,
+                    e->log_leadership_term_id, e->append_position,
+                    e->candidate_term_id, e->this_member->id);
+                m->is_ballot_sent = sent;
+            }
+        }
 
         transition_to(e, AERON_ELECTION_CANDIDATE_BALLOT, now_ns);
         return 1;
@@ -532,7 +577,7 @@ static int do_nominate(aeron_cluster_election_t *e, int64_t now_ns)
     if ((now_ns - e->time_of_last_update_ns) >= e->election_status_interval_ns)
     {
         election_broadcast_canvass(e,
-            e->log_leadership_term_id, e->log_position,
+            e->log_leadership_term_id, e->append_position,
             e->leadership_term_id, e->this_member->id,
             e->agent_ops.get_protocol_version(e->agent_ops.clientd));
         e->time_of_last_update_ns = now_ns;
@@ -541,47 +586,65 @@ static int do_nominate(aeron_cluster_election_t *e, int64_t now_ns)
     return 0;
 }
 
+/* Mirrors Java Election.candidateBallot() */
 static int do_candidate_ballot(aeron_cluster_election_t *e, int64_t now_ns)
 {
-    int votes = aeron_cluster_member_count_votes(
-        e->members, e->member_count, e->candidate_term_id);
+    int work_count = 0;
 
-    if (is_quorum(votes, e->member_count))
+    /* Unanimous leader check (early win) */
+    if (aeron_cluster_member_is_unanimous_leader(
+            e->members, e->member_count, e->candidate_term_id, e->graceful_closed_leader_id))
     {
-        /* Won! */
-        e->leader_member     = e->this_member;
+        e->leader_member      = e->this_member;
         e->leadership_term_id = e->candidate_term_id;
         e->is_leader_startup  = e->is_node_startup;
         transition_to(e, AERON_ELECTION_LEADER_LOG_REPLICATION, now_ns);
-        return 1;
+        work_count++;
     }
-
-    if ((now_ns - e->time_of_state_change_ns) >= e->election_timeout_ns)
+    else if ((now_ns - e->time_of_state_change_ns) >= e->election_timeout_ns)
     {
-        /* Timed out — reset per-election member tracking before restarting */
+        /* Timeout — check quorum leader fallback */
+        if (aeron_cluster_member_is_quorum_leader(
+                e->members, e->member_count, e->candidate_term_id))
+        {
+            e->leader_member      = e->this_member;
+            e->leadership_term_id = e->candidate_term_id;
+            e->is_leader_startup  = e->is_node_startup;
+            transition_to(e, AERON_ELECTION_LEADER_LOG_REPLICATION, now_ns);
+        }
+        else
+        {
+            transition_to(e, AERON_ELECTION_CANVASS, now_ns);
+        }
+        work_count++;
+    }
+    else
+    {
+        /* Java: for (member : clusterMembers) { if (!member.isBallotSent()) {
+         *   member.isBallotSent(consensusPublisher.requestVote(member.publication(), ...)); } } */
         for (int i = 0; i < e->member_count; i++)
         {
-            if (&e->members[i] != e->this_member)
+            aeron_cluster_member_t *m = &e->members[i];
+            if (!m->is_ballot_sent)
             {
-                e->members[i].candidate_term_id  = -1;
-                e->members[i].log_position       = -1;
-                e->members[i].leadership_term_id = -1;
+                bool sent = e->pub_ops.request_vote(e->pub_ops.clientd, m,
+                    e->log_leadership_term_id, e->append_position,
+                    e->candidate_term_id, e->this_member->id);
+                m->is_ballot_sent = sent;
+                if (sent) { work_count++; }
             }
         }
-        transition_to(e, AERON_ELECTION_CANVASS, now_ns);
-        return 1;
     }
 
-    return 0;
+    return work_count;
 }
 
+/* Mirrors Java Election.followerBallot() — timeout goes back to CANVASS */
 static int do_follower_ballot(aeron_cluster_election_t *e, int64_t now_ns)
 {
     if ((now_ns - e->time_of_state_change_ns) >= e->election_timeout_ns)
     {
-        /* No leader announced — try nominating */
-        e->nomination_deadline_ns = now_ns;
-        transition_to(e, AERON_ELECTION_NOMINATE, now_ns);
+        transition_to(e, AERON_ELECTION_CANVASS, now_ns);
         return 1;
     }
     return 0;
@@ -1040,10 +1103,16 @@ static int do_follower_log_init(aeron_cluster_election_t *e, int64_t now_ns)
                 transition_to(e, AERON_ELECTION_FOLLOWER_LOG_AWAIT, now_ns);
                 return 1;
             }
-            /* Subscription not yet available — retry next tick */
-            return 0;
         }
-        /* logSessionId unknown — retry next tick */
+
+        /* Java: timeout falls through to followerLogAwait timeout.
+         * C: explicit timeout here to avoid infinite retry when leader is gone. */
+        if (now_ns >= (e->time_of_state_change_ns + e->leader_heartbeat_timeout_ns))
+        {
+            transition_to(e, AERON_ELECTION_CANVASS, now_ns);
+            return 1;
+        }
+
         return 0;
     }
     else
@@ -1074,19 +1143,16 @@ static int do_follower_log_await(aeron_cluster_election_t *e, int64_t now_ns)
             }
             else if (now_ns >= (e->time_of_state_change_ns + e->leader_heartbeat_timeout_ns))
             {
-                AERON_SET_ERR(ETIMEDOUT, "%s", "failed to join live log as follower");
-                return -1;
+                /* Java: throw TimeoutException → caught by error handler → CANVASS */
+                transition_to(e, AERON_ELECTION_CANVASS, now_ns);
+                work_count++;
             }
-        }
-        else if (-1 == aeron_subscription_channel_status(e->log_subscription))
-        {
-            AERON_SET_ERR(EIO, "%s", "failed to add live log as follower - channel errored");
-            return -1;
         }
         else if (now_ns >= (e->time_of_state_change_ns + e->leader_heartbeat_timeout_ns))
         {
-            AERON_SET_ERR(ETIMEDOUT, "%s", "failed to join live log");
-            return -1;
+            /* Java: throw TimeoutException → caught by error handler → CANVASS */
+            transition_to(e, AERON_ELECTION_CANVASS, now_ns);
+            work_count++;
         }
     }
 
@@ -1151,7 +1217,10 @@ int aeron_cluster_election_create(
     e->log_session_id             = -1;
     e->now_ns                     = aeron_nano_clock();
     e->time_of_state_change_ns    = e->now_ns;
-    e->time_of_last_update_ns     = 0;
+    /* Java: initialTimeOfLastUpdateNs = nowNs - NANOSECONDS.convert(1, DAYS) */
+    e->initial_time_of_last_update_ns = e->now_ns - INT64_C(86400000000000);
+    e->time_of_last_update_ns     = e->initial_time_of_last_update_ns;
+    e->time_of_last_commit_position_update_ns = e->initial_time_of_last_update_ns;
     e->nomination_deadline_ns     = INT64_MAX;
     e->startup_canvass_timeout_ns = startup_canvass_timeout_ns;
     e->election_timeout_ns        = election_timeout_ns;
@@ -1159,8 +1228,11 @@ int aeron_cluster_election_create(
     e->leader_heartbeat_timeout_ns = leader_heartbeat_timeout_ns;
     e->is_node_startup            = is_node_startup;
     e->is_leader_startup          = false;
-    e->is_extended_canvass        = false;
+    e->is_extended_canvass        = is_node_startup;  /* Java: isExtendedCanvass = isNodeStartup */
     e->is_first_init              = true;
+    e->graceful_closed_leader_id  = -1;  /* NULL_VALUE */
+    e->initial_log_leadership_term_id  = log_leadership_term_id;
+    e->initial_term_base_log_position  = log_position;
     e->log_replay                 = NULL;
     e->log_replication            = NULL;
     e->log_subscription           = NULL;
@@ -1230,24 +1302,36 @@ int aeron_cluster_election_do_work(aeron_cluster_election_t *election, int64_t n
 /* -----------------------------------------------------------------------
  * Incoming message handlers (called by ConsensusAdapter)
  * ----------------------------------------------------------------------- */
+/* Mirrors Java Election.onCanvassPosition() */
 void aeron_cluster_election_on_canvass_position(aeron_cluster_election_t *e,
     int64_t log_leadership_term_id, int64_t log_position,
     int64_t leadership_term_id, int32_t follower_member_id,
     int32_t protocol_version)
 {
-    aeron_cluster_member_t *m = aeron_cluster_member_find_by_id(
-        e->members, e->member_count, follower_member_id);
-    if (NULL == m) { return; }
+    if (AERON_ELECTION_INIT == e->state) { return; }
 
-    m->log_position      = log_position;
-    m->leadership_term_id = log_leadership_term_id;
-    m->time_of_last_append_position_ns = e->now_ns;
+    if (follower_member_id == e->graceful_closed_leader_id)
+    {
+        e->graceful_closed_leader_id = -1;
+    }
+
+    aeron_cluster_member_t *follower = aeron_cluster_member_find_by_id(
+        e->members, e->member_count, follower_member_id);
+    if (NULL != follower && e->this_member->id != follower_member_id)
+    {
+        follower->log_position       = log_position;
+        follower->leadership_term_id = log_leadership_term_id;
+        follower->time_of_last_append_position_ns = e->now_ns;
+    }
 }
 
 void aeron_cluster_election_on_request_vote(aeron_cluster_election_t *e,
     int64_t log_leadership_term_id, int64_t log_position,
     int64_t candidate_term_id, int32_t candidate_member_id)
 {
+    if (AERON_ELECTION_INIT == e->state) { return; }
+    if (candidate_member_id == e->this_member->id) { return; }
+
     aeron_cluster_member_t *candidate = aeron_cluster_member_find_by_id(
         e->members, e->member_count, candidate_member_id);
     if (NULL == candidate) { return; }
@@ -1263,8 +1347,9 @@ void aeron_cluster_election_on_request_vote(aeron_cluster_election_t *e,
         e->candidate_term_id = candidate_term_id;
     }
 
+    /* Java: placeVote() sends voter's own logLeadershipTermId + appendPosition */
     e->pub_ops.vote(e->pub_ops.clientd, candidate,
-        candidate_term_id, log_leadership_term_id, log_position,
+        candidate_term_id, e->log_leadership_term_id, e->append_position,
         candidate_member_id, e->this_member->id, vote);
 
     /* Transition to FOLLOWER_BALLOT if voted YES from any pre-leader state.
@@ -1283,15 +1368,19 @@ void aeron_cluster_election_on_vote(aeron_cluster_election_t *e,
     int64_t log_position, int32_t candidate_member_id,
     int32_t follower_member_id, bool vote)
 {
+    if (AERON_ELECTION_INIT == e->state) { return; }
     if (e->state != AERON_ELECTION_CANDIDATE_BALLOT) { return; }
     if (candidate_member_id != e->this_member->id) { return; }
     if (candidate_term_id != e->candidate_term_id) { return; }
 
     aeron_cluster_member_t *m = aeron_cluster_member_find_by_id(
         e->members, e->member_count, follower_member_id);
-    if (NULL != m && vote)
+    if (NULL != m)
     {
-        m->candidate_term_id = candidate_term_id;
+        m->candidate_term_id = vote ? candidate_term_id : -1;
+        m->vote              = vote ? 1 : 0;
+        m->log_position       = log_position;
+        m->leadership_term_id = log_leadership_term_id;
     }
 }
 
@@ -1311,12 +1400,31 @@ void aeron_cluster_election_on_new_leadership_term(aeron_cluster_election_t *e,
     int32_t app_version,
     bool is_startup)
 {
+    if (AERON_ELECTION_INIT == e->state) { return; }
+    if (leader_member_id == e->this_member->id &&
+        leadership_term_id == e->leadership_term_id) { return; }
+
+    if (e->graceful_closed_leader_id >= 0)
+    {
+        e->graceful_closed_leader_id = -1;
+    }
+
+    /* State guard: only process from CANVASS, FOLLOWER_BALLOT, or CANDIDATE_BALLOT with matching term */
+    bool can_process = (e->state == AERON_ELECTION_CANVASS) ||
+        ((e->state == AERON_ELECTION_FOLLOWER_BALLOT || e->state == AERON_ELECTION_CANDIDATE_BALLOT) &&
+         leadership_term_id == e->candidate_term_id);
+    if (!can_process) { return; }
+
     aeron_cluster_member_t *leader = aeron_cluster_member_find_by_id(
         e->members, e->member_count, leader_member_id);
     if (NULL == leader) { return; }
 
     e->leader_member      = leader;
-    e->leadership_term_id = next_leadership_term_id;
+    e->leadership_term_id = leadership_term_id;
+    if (e->candidate_term_id < leadership_term_id)
+    {
+        e->candidate_term_id = leadership_term_id;
+    }
     e->log_session_id     = log_session_id;
     e->is_leader_startup  = is_startup;
 
@@ -1383,6 +1491,9 @@ void aeron_cluster_election_on_append_position(aeron_cluster_election_t *e,
     int64_t leadership_term_id, int64_t log_position,
     int32_t follower_member_id, int8_t flags)
 {
+    if (AERON_ELECTION_INIT == e->state) { return; }
+    if (leadership_term_id > e->leadership_term_id) { return; }
+
     aeron_cluster_member_t *m = aeron_cluster_member_find_by_id(
         e->members, e->member_count, follower_member_id);
     if (NULL == m) { return; }
@@ -1395,10 +1506,21 @@ void aeron_cluster_election_on_append_position(aeron_cluster_election_t *e,
 void aeron_cluster_election_on_commit_position(aeron_cluster_election_t *e,
     int64_t leadership_term_id, int64_t log_position, int32_t leader_member_id)
 {
+    if (AERON_ELECTION_INIT == e->state) { return; }
+
+    /* Java: validate sender is the known leader */
+    if (NULL != e->leader_member && e->leader_member->id != leader_member_id) { return; }
+
     if (e->notified_commit_position < log_position)
     {
         e->notified_commit_position = log_position;
         e->agent_ops.notify_commit_position(e->agent_ops.clientd, log_position);
+    }
+
+    /* Java: reset replication deadline when in FOLLOWER_LOG_REPLICATION */
+    if (AERON_ELECTION_FOLLOWER_LOG_REPLICATION == e->state)
+    {
+        e->replication_deadline_ns = e->now_ns + e->leader_heartbeat_timeout_ns;
     }
 }
 

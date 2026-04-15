@@ -152,6 +152,7 @@ int aeron_consensus_module_agent_create(
     a->session_timeout_ns           = ctx->session_timeout_ns;
     a->slow_tick_deadline_ns        = 0;
     a->time_of_last_log_update_ns   = 0;
+    a->time_of_last_leader_update_ns = 0;
     a->last_do_work_ns              = aeron_nano_clock();
     a->time_of_last_append_position_send_ns = 0;
     a->last_quorum_backtrack_commit_position = 0;
@@ -1722,6 +1723,7 @@ void aeron_consensus_module_agent_on_new_leadership_term(
 
     if (leadership_term_id >= agent->leadership_term_id)
     {
+        agent->time_of_last_leader_update_ns = now_ns;
         agent->time_of_last_log_update_ns = now_ns;
     }
 
@@ -1835,6 +1837,7 @@ void aeron_consensus_module_agent_on_commit_position(
 
     if (leadership_term_id >= agent->leadership_term_id)
     {
+        agent->time_of_last_leader_update_ns = now_ns;
         agent->time_of_last_log_update_ns = now_ns;
     }
 

@@ -124,6 +124,12 @@ typedef struct aeron_cluster_election_agent_ops_stct
         int32_t log_session_id, int32_t app_version);
     void (*notify_commit_position)(void *clientd, int64_t commit_position);
 
+    /** Set the agent's cluster role (LEADER/FOLLOWER/CANDIDATE). */
+    void (*set_role)(void *clientd, aeron_cluster_role_t role);
+
+    /** Get timeOfLastLeaderUpdateNs from the agent. */
+    int64_t (*time_of_last_leader_update_ns)(void *clientd);
+
     /* ---- Phase 1.5: complex state callbacks ---- */
 
     /** Compute quorum position across members, bounded by append_position. */
@@ -268,6 +274,8 @@ typedef struct aeron_cluster_election_stct
     /* Timing */
     int64_t  time_of_state_change_ns;
     int64_t  time_of_last_update_ns;
+    int64_t  initial_time_of_last_update_ns;
+    int64_t  time_of_last_commit_position_update_ns;
     int64_t  nomination_deadline_ns;
     int64_t  startup_canvass_timeout_ns;
     int64_t  election_timeout_ns;
@@ -279,6 +287,13 @@ typedef struct aeron_cluster_election_stct
     bool     is_leader_startup;
     bool     is_extended_canvass;
     bool     is_first_init;
+
+    /* Graceful close tracking — matches Java gracefulClosedLeaderId */
+    int32_t  graceful_closed_leader_id;
+
+    /* Initial log state — saved at construction for ensureRecordingLogCoherent */
+    int64_t  initial_log_leadership_term_id;
+    int64_t  initial_term_base_log_position;
 
     /* --- Phase 1.5: complex state resources --- */
 

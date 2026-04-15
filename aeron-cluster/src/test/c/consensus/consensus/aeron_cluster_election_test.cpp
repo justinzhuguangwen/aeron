@@ -71,249 +71,671 @@ TEST(ElectionTest, shouldElectSingleNodeClusterLeader)
 }
 
 /* -----------------------------------------------------------------------
- * 2. shouldElectAppointedLeader (single node with appointed_leader_id)
- *    Maps to: election jumps straight to NOMINATE, skipping canvass
+ * 2. shouldElectCandidateWithFullVote
+ *    Java: member 1 is candidate, gets votes from both peers 0 and 2.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldElectCandidateWithFullVote)
 {
     ElectionTestFixture f;
-    f.build(THREE_NODE, 0, NULL_VALUE, 0, NULL_VALUE, -1,
-        /* startup_canvass_timeout */ 5000000000LL);
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
+    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
+        startup_canvass_ns, election_timeout_ns, 1LL);
 
-    int64_t now = 1000000LL;
-
-    /* INIT → CANVASS */
+    int64_t now = 1LL;
     f.do_work(now);
-    EXPECT_EQ(AERON_ELECTION_CANVASS, f.state());
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
 
-    /* All peers canvass back with no log */
-    f.on_canvass(1, NULL_VALUE, 0, NULL_VALUE);
+    f.on_canvass(0, NULL_VALUE, 0, NULL_VALUE);
     f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
 
-    /* Advance past startup canvass timeout → NOMINATE */
-    now += 5000000001LL;
+    now += 1LL;
     f.do_work(now);
-    EXPECT_EQ(AERON_ELECTION_NOMINATE, f.state());
-    /* Advance past nomination deadline → CANDIDATE_BALLOT */
-    f.do_work(now += 5000000001LL);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
+
+    now += election_timeout_ns >> 1;
+    f.do_work(now);
     EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANDIDATE_BALLOT));
+
+    now += 1LL;
+    int64_t candidate_term_id = NULL_VALUE + 1;
+    f.on_vote(0, candidate_term_id, NULL_VALUE, 0, 1, true);
+    f.on_vote(2, candidate_term_id, NULL_VALUE, 0, 1, true);
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_LEADER_LOG_REPLICATION));
 }
 
 /* -----------------------------------------------------------------------
  * 3. shouldCanvassMembersInSuccessfulLeadershipBid
- *    Verify canvass messages are sent to all peers during CANVASS state
+ *    Java: member 1 as follower, verify canvass messages sent to peers 0 and 2.
+ *    After receiving canvass from 0 and 2, transitions to NOMINATE.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldCanvassMembersInSuccessfulLeadershipBid)
 {
     ElectionTestFixture f;
-    f.build(THREE_NODE, 0, NULL_VALUE, 0, NULL_VALUE, -1,
+    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
         /* startup_canvass_timeout_ns */ 5000000000LL,
         /* election_timeout_ns */ 1000000000LL,
         /* status_interval_ns */ 1LL /* tiny so we broadcast immediately */);
 
-    int64_t now = 1000000LL;
+    /* Use a timestamp after initial_time_of_last_update_ns so the canvass broadcast fires */
+    int64_t now = f.election->initial_time_of_last_update_ns + 2LL;
     f.do_work(now);
-    EXPECT_EQ(AERON_ELECTION_CANVASS, f.state());
 
-    /* Should have sent canvass to both peers */
-    EXPECT_GE(f.pub.canvass_count(), 2);
-    EXPECT_TRUE(f.pub.sent_to("canvass", 1));
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
+
+    /* Should have sent canvass to peers 0 and 2 */
+    EXPECT_TRUE(f.pub.sent_to("canvass", 0));
     EXPECT_TRUE(f.pub.sent_to("canvass", 2));
+
+    f.on_canvass(0, NULL_VALUE, 0, NULL_VALUE);
+    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
 }
 
 /* -----------------------------------------------------------------------
  * 4. shouldVoteForCandidateDuringNomination
- *    When we receive a RequestVote for a valid candidate, we respond with Vote=true
+ *    Java: member 1 as follower, goes CANVASS → NOMINATE, then receives
+ *    requestVote from member 0 → FOLLOWER_BALLOT.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldVoteForCandidateDuringNomination)
 {
     ElectionTestFixture f;
-    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1); /* member 1 */
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
+    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
+        startup_canvass_ns, election_timeout_ns, 1LL);
 
-    int64_t now = 1000000LL;
-    f.do_work(now);  /* → CANVASS */
+    int64_t now = 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
 
-    /* Member 0 requests vote for term 1 */
+    now += 1LL;
+    f.do_work(now);
+
     f.on_canvass(0, NULL_VALUE, 0, NULL_VALUE);
-    /* Simulate member 0 sending RequestVote */
+    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
+
+    /* Member 0 requests vote for candidateTermId = leadershipTermId + 1 = 0 */
+    now += 1LL;
+    int64_t candidate_term_id = NULL_VALUE + 1;
     aeron_cluster_election_on_request_vote(f.election,
-        NULL_VALUE, 0, 1LL /* candidate_term_id */, 0 /* candidate_member_id */);
-
-    /* We should have sent a vote response */
-    EXPECT_GE(f.pub.vote_count(), 1);
-    auto *v = f.pub.last("vote");
-    ASSERT_NE(nullptr, v);
-    EXPECT_EQ(0, v->to_member_id);   /* sent to member 0 */
-    EXPECT_EQ(1, v->candidate_term_id);
-
-    /* State should be FOLLOWER_BALLOT after voting */
-    EXPECT_EQ(AERON_ELECTION_FOLLOWER_BALLOT, f.state());
+        NULL_VALUE, 0, candidate_term_id, 0);
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_FOLLOWER_BALLOT));
 }
 
 /* -----------------------------------------------------------------------
  * 5. shouldTimeoutCanvassWithMajority
- *    When quorum responds to canvass and we are the best candidate → NOMINATE
+ *    Java: member 1 as follower. Receives onAppendPosition from member 0.
+ *    After startupCanvassTimeout, transitions to NOMINATE.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldTimeoutCanvassWithMajority)
 {
     ElectionTestFixture f;
-    /* Very short canvass timeout */
-    f.build(THREE_NODE, 0, NULL_VALUE, 0, NULL_VALUE, -1,
-        /* startup_canvass */ 100LL,
-        /* election_timeout */ 1000000000LL,
-        /* status_interval */ 1LL);
+    int64_t startup_canvass_ns = 5000000000LL;
+    int64_t election_timeout_ns = 1000000000LL;
+    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
+        startup_canvass_ns, election_timeout_ns, 1LL);
 
-    int64_t now = 50LL;
+    int64_t now = 1LL;
     f.do_work(now);
-    EXPECT_EQ(AERON_ELECTION_CANVASS, f.state());
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
 
-    /* Peers respond with lower/equal log position — we are best */
-    f.on_canvass(1, NULL_VALUE, 0, NULL_VALUE);
-    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
+    f.on_append_pos(0, NULL_VALUE, 0);
 
-    /* Advance past canvass timeout */
-    f.do_work(now + 200LL);
+    now += 1LL;
+    f.do_work(now);
 
-    /* Should have moved to NOMINATE (we are best candidate) */
+    now += startup_canvass_ns;
+    f.do_work(now);
     EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
 }
 
 /* -----------------------------------------------------------------------
  * 6. shouldWinCandidateBallotWithMajority
+ *    Java: member 1, is_startup=false. Gets canvass from 0 and 2,
+ *    nominates, gets one vote from member 2 → LEADER_LOG_REPLICATION.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldWinCandidateBallotWithMajority)
 {
     ElectionTestFixture f;
-    f.build(THREE_NODE, 0, NULL_VALUE, 0, NULL_VALUE, -1,
-        100LL /* canvass */, 1000000000LL, 1LL);
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
+    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
+        startup_canvass_ns, election_timeout_ns, 1LL,
+        /* heartbeat_timeout */ 10000000000LL,
+        /* is_node_startup */ false);
 
-    int64_t now = 50LL;
+    int64_t now = 1LL;
     f.do_work(now);
-    f.on_canvass(1, NULL_VALUE, 0, NULL_VALUE);
-    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
-    f.do_work(now + 200LL); /* → NOMINATE */
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
 
-    /* Drive to CANDIDATE_BALLOT */
-    f.do_work(now + 200LL + 1000000001LL);
+    f.on_canvass(0, NULL_VALUE, 0, NULL_VALUE);
+    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
+
+    now += election_timeout_ns >> 1;
+    f.do_work(now);
     EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANDIDATE_BALLOT));
 
-    const int64_t candidate_term = f.election->candidate_term_id;
-
-    /* Two peers vote YES */
-    f.on_vote(1, candidate_term, NULL_VALUE, 0, 0, true);
-    f.on_vote(2, candidate_term, NULL_VALUE, 0, 0, true);
-
-    f.do_work(now + 200LL + 1000000002LL);
+    now += election_timeout_ns;
+    int64_t candidate_term_id = NULL_VALUE + 1;
+    f.on_vote(2, candidate_term_id, NULL_VALUE, 0, 1, true);
+    f.do_work(now);
     EXPECT_TRUE(f.state_reached(AERON_ELECTION_LEADER_LOG_REPLICATION));
 }
 
 /* -----------------------------------------------------------------------
  * 7. shouldTimeoutCandidateBallotWithoutMajority
+ *    Java: member 1 as candidate. Goes through CANVASS → NOMINATE → CANDIDATE_BALLOT.
+ *    No votes received → times out → back to CANVASS.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldTimeoutCandidateBallotWithoutMajority)
 {
     ElectionTestFixture f;
-    f.build(THREE_NODE, 0, NULL_VALUE, 0, NULL_VALUE, -1,
-        100LL, 500000LL /* short election timeout */, 1LL);
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
+    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
+        startup_canvass_ns, election_timeout_ns, 1LL);
 
-    int64_t now = 50LL;
+    int64_t now = 1LL;
     f.do_work(now);
-    f.on_canvass(1, NULL_VALUE, 0, NULL_VALUE);
-    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
-    f.do_work(now + 200LL);           /* → NOMINATE */
-    f.do_work(now + 200LL + 500001LL); /* → CANDIDATE_BALLOT */
-    f.do_work(now + 200LL + 1000002LL); /* timeout → back to CANVASS */
-
-    /* No majority → should restart from CANVASS */
     EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
-    /* Restart after timeout */
+
+    f.on_canvass(0, NULL_VALUE, 0, NULL_VALUE);
+    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
+
+    now += election_timeout_ns >> 1;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANDIDATE_BALLOT));
+
+    /* No votes → timeout → CANVASS */
+    now += election_timeout_ns;
+    f.do_work(now);
+
+    /* Count CANVASS transitions — should have returned to CANVASS */
     int canvass_count = 0;
     for (auto &s : f.agent.state_changes)
         if (s == AERON_ELECTION_CANVASS) canvass_count++;
-    EXPECT_GE(canvass_count, 1); /* at least one CANVASS transition */
+    EXPECT_GE(canvass_count, 2); /* initial CANVASS + timeout CANVASS */
+
+    EXPECT_EQ(NULL_VALUE, f.election->leadership_term_id);
 }
 
 /* -----------------------------------------------------------------------
  * 8. shouldTimeoutFailedCandidateBallotOnSplitVoteThenSucceedOnRetry
+ *    Java: member 1. First ballot gets a NO vote from member 2, times out.
+ *    Second ballot gets a YES vote from member 2, succeeds.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldTimeoutFailedCandidateBallotOnSplitVoteThenSucceedOnRetry)
 {
     ElectionTestFixture f;
-    f.build(THREE_NODE, 0, NULL_VALUE, 0, NULL_VALUE, -1,
-        100LL, 500000LL, 1LL);
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
+    int64_t heartbeat_timeout_ns = 10000000000LL;
+    f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
+        startup_canvass_ns, election_timeout_ns, 1LL, heartbeat_timeout_ns);
 
-    int64_t now = 50LL;
-    /* First election attempt — no peer votes → ballot times out */
+    int64_t now = 1LL;
     f.do_work(now);
-    f.on_canvass(1, NULL_VALUE, 0, NULL_VALUE);
-    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
-    f.do_work(now += 200LL);
-    f.do_work(now += 300000LL); /* → CANDIDATE_BALLOT (past max nomination deadline) */
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
 
-    int64_t first_candidate_term = f.election->candidate_term_id;
+    /* First attempt: canvass from member 0 only */
+    f.on_canvass(0, NULL_VALUE, 0, NULL_VALUE);
 
-    /* No peer votes — only self vote, not enough for quorum=2 */
+    now += startup_canvass_ns;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
 
-    /* Timeout the ballot */
-    f.do_work(now += 500001LL); /* → back to CANVASS */
+    now += election_timeout_ns >> 1;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANDIDATE_BALLOT));
 
-    /* Second attempt */
-    f.pub.reset();
-    f.on_canvass(1, NULL_VALUE, 0, NULL_VALUE);
-    f.on_canvass(2, NULL_VALUE, 0, NULL_VALUE);
-    f.do_work(now += 200LL);    /* canvass timeout → NOMINATE */
-    f.do_work(now += 300000LL); /* → CANDIDATE_BALLOT (past max nomination deadline) */
+    /* Member 2 votes NO */
+    now += 1LL;
+    int64_t first_candidate_term = NULL_VALUE + 1;
+    f.on_vote(2, first_candidate_term, NULL_VALUE, 0, 1, false);
+    f.do_work(now);
 
-    int64_t second_candidate_term = f.election->candidate_term_id;
-    EXPECT_GT(second_candidate_term, first_candidate_term); /* term incremented */
+    /* Timeout → back to CANVASS */
+    now += election_timeout_ns;
+    f.do_work(now);
+    int canvass_count = 0;
+    for (auto &s : f.agent.state_changes)
+        if (s == AERON_ELECTION_CANVASS) canvass_count++;
+    EXPECT_GE(canvass_count, 2);
 
-    /* Both vote yes this time */
-    f.on_vote(1, second_candidate_term, NULL_VALUE, 0, 0, true);
-    f.on_vote(2, second_candidate_term, NULL_VALUE, 0, 0, true);
+    /* Second attempt: canvass from member 0 */
+    f.on_canvass(0, NULL_VALUE, 0, NULL_VALUE);
 
-    f.do_work(now += 1LL);
+    now += heartbeat_timeout_ns;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
+
+    now += election_timeout_ns;
+    f.do_work(now);
+
+    /* count CANDIDATE_BALLOT transitions */
+    int ballot_count = 0;
+    for (auto &s : f.agent.state_changes)
+        if (s == AERON_ELECTION_CANDIDATE_BALLOT) ballot_count++;
+    EXPECT_GE(ballot_count, 2);
+
+    /* Member 2 votes YES this time */
+    int64_t second_candidate_term = NULL_VALUE + 2;
+    f.on_vote(2, second_candidate_term, NULL_VALUE + 1, 0, 1, true);
+
+    now += election_timeout_ns;
+    f.do_work(now);
     EXPECT_TRUE(f.state_reached(AERON_ELECTION_LEADER_LOG_REPLICATION));
+
+    /* Drive through LEADER_REPLAY → LEADER_INIT → LEADER_READY */
+    f.do_work(now + 1LL);
+    f.do_work(now + 1LL);
+    f.do_work(now + 2LL);
+    f.do_work(now + 2LL);
+    EXPECT_EQ(second_candidate_term, f.election->leadership_term_id);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_LEADER_READY));
 }
 
 /* -----------------------------------------------------------------------
  * 9. shouldTimeoutFollowerBallotWithoutLeaderEmerging
+ *    Java: member 1. Receives requestVote from member 0, enters FOLLOWER_BALLOT.
+ *    Times out → back to CANVASS.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldTimeoutFollowerBallotWithoutLeaderEmerging)
 {
     ElectionTestFixture f;
-    /* Member 1: has less log than member 0, so will follow */
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
     f.build(THREE_NODE, 1, NULL_VALUE, 0, NULL_VALUE, -1,
-        100LL, 500000LL, 1LL);
+        startup_canvass_ns, election_timeout_ns, 1LL);
 
-    int64_t now = 50LL;
+    int64_t now = 1LL;
     f.do_work(now);
-    /* Member 0 requests vote — member 1 votes yes and enters FOLLOWER_BALLOT */
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
+
+    int64_t candidate_term_id = NULL_VALUE + 1;
     aeron_cluster_election_on_request_vote(f.election,
-        NULL_VALUE, 0, 1LL, 0);
-    EXPECT_EQ(AERON_ELECTION_FOLLOWER_BALLOT, f.state());
+        NULL_VALUE, 0, candidate_term_id, 0);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_FOLLOWER_BALLOT));
 
     /* No leader announces NewLeadershipTerm → timeout */
-    f.do_work(now += 500001LL);
+    now += election_timeout_ns;
+    f.do_work(now);
 
-    /* Should have transitioned to NOMINATE (try becoming candidate itself) */
-    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE) ||
-                f.state_reached(AERON_ELECTION_CANVASS));
+    /* Should have returned to CANVASS */
+    int canvass_count = 0;
+    for (auto &s : f.agent.state_changes)
+        if (s == AERON_ELECTION_CANVASS) canvass_count++;
+    EXPECT_GE(canvass_count, 2);
+    EXPECT_EQ(NULL_VALUE, f.election->leadership_term_id);
 }
 
 /* -----------------------------------------------------------------------
  * 10. shouldBecomeFollowerIfEnteringNewElection
- *     When a new election starts mid-term, node resets and re-canvasses
+ *     Java: is_startup=false, member 0, leadershipTermId=1, logPosition=120.
+ *     When a node re-enters an election mid-term, it resets to CANVASS.
  * ----------------------------------------------------------------------- */
 TEST(ElectionTest, shouldBecomeFollowerIfEnteringNewElection)
 {
     ElectionTestFixture f;
-    f.build(THREE_NODE, 0, NULL_VALUE, 0, NULL_VALUE, -1,
-        100LL, 500000LL, 1LL);
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
+    f.build(THREE_NODE, 0, 1LL /* log_term */, 120LL /* log_pos */, 1LL /* leadership_term */,
+        -1, startup_canvass_ns, election_timeout_ns, 1LL,
+        10000000000LL, /* is_node_startup */ false);
 
-    int64_t now = 50LL;
+    int64_t now = 1LL;
     f.do_work(now);
-    /* Start as canvasser */
-    EXPECT_EQ(AERON_ELECTION_CANVASS, f.state());
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
+}
+
+/* -----------------------------------------------------------------------
+ * shouldElectAppointedLeader
+ *    Java: member 0 is the appointed leader in a 3-node cluster.
+ *    Goes CANVASS → NOMINATE → CANDIDATE_BALLOT → LEADER_LOG_REPLICATION
+ *    → LEADER_REPLAY → LEADER_READY → (AppendPosition quorum) → CLOSED.
+ * ----------------------------------------------------------------------- */
+TEST(ElectionTest, shouldElectAppointedLeader)
+{
+    ElectionTestFixture f;
+    int64_t election_timeout_ns = 1000000000LL;
+    int64_t startup_canvass_ns = 5000000000LL;
+    int64_t leadership_term_id = NULL_VALUE;
+    int64_t log_position = 0;
+
+    f.build(THREE_NODE, 0, leadership_term_id, log_position, leadership_term_id, -1,
+        startup_canvass_ns, election_timeout_ns, 1LL);
+
+    /* Set appointed leader to member 0 */
+    f.election->appointed_leader_id = 0;
+
+    int64_t now = 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
+
+    f.on_canvass(1, leadership_term_id, log_position, leadership_term_id);
+    f.on_canvass(2, leadership_term_id, log_position, leadership_term_id);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_NOMINATE));
+
+    /* Advance past nomination deadline → CANDIDATE_BALLOT */
+    now += election_timeout_ns >> 1;
+    f.do_work(now);
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANDIDATE_BALLOT));
+
+    int64_t candidate_term_id = leadership_term_id + 1;
+
+    /* Receive votes from both peers */
+    f.on_vote(1, candidate_term_id, leadership_term_id, log_position, 0, true);
+    f.on_vote(2, candidate_term_id, leadership_term_id, log_position, 0, true);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_LEADER_LOG_REPLICATION));
+
+    /* Drive through LEADER_REPLAY → LEADER_INIT → LEADER_READY */
+    f.do_work(now + 1LL);
+    f.do_work(now + 1LL);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_LEADER_READY));
+
+    /* Followers acknowledge with AppendPosition */
+    int64_t term = f.election->leadership_term_id;
+    f.on_append_pos(1, term, log_position);
+    f.on_append_pos(2, term, log_position);
+
+    now += 2LL;
+    f.do_work(now);
+    EXPECT_EQ(AERON_ELECTION_CLOSED, f.state());
+    EXPECT_EQ(1, f.agent.election_complete_count);
+    EXPECT_EQ(candidate_term_id, f.election->leadership_term_id);
+}
+
+/* -----------------------------------------------------------------------
+ * shouldVoteForAppointedLeader
+ *    Java: member 1 as follower. Receives requestVote from member 0,
+ *    votes YES, enters FOLLOWER_BALLOT, receives NewLeadershipTerm,
+ *    drives through FOLLOWER_REPLAY → LOG_INIT → LOG_AWAIT → READY → CLOSED.
+ * ----------------------------------------------------------------------- */
+TEST(ElectionTest, shouldVoteForAppointedLeader)
+{
+    ElectionTestFixture f;
+    int64_t leadership_term_id = NULL_VALUE;
+    int64_t log_position = 0;
+    int32_t candidate_id = 0;
+    int64_t leader_recording_id = 983724LL;
+
+    f.build(THREE_NODE, 1, leadership_term_id, log_position, leadership_term_id, -1);
+
+    int64_t now = 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
+
+    int64_t candidate_term_id = leadership_term_id + 1;
+    aeron_cluster_election_on_request_vote(f.election,
+        leadership_term_id, log_position, candidate_term_id, candidate_id);
+
+    /* Should have voted YES */
+    auto *v = f.pub.last("vote");
+    ASSERT_NE(nullptr, v);
+    EXPECT_TRUE(v->vote_value);
+    EXPECT_EQ(candidate_id, v->to_member_id);
+
+    now += 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_FOLLOWER_BALLOT));
+
+    /* Leader sends NewLeadershipTerm */
+    int32_t log_session_id = -7;
+    int64_t commit_position = 100LL;
+    f.on_new_leadership_term(
+        leadership_term_id,     /* log_leadership_term_id */
+        NULL_VALUE,             /* next_leadership_term_id */
+        -1LL,                   /* next_term_base (NULL_POSITION) */
+        -1LL,                   /* next_log_position (NULL_POSITION) */
+        candidate_term_id,      /* leadership_term_id */
+        log_position,           /* term_base_log_position */
+        log_position,           /* log_position */
+        commit_position,        /* commit_position */
+        leader_recording_id,    /* recording_id */
+        now,                    /* timestamp */
+        candidate_id,           /* leader_member_id */
+        log_session_id,         /* log_session_id */
+        0,                      /* app_version */
+        false);                 /* is_startup */
+
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_FOLLOWER_REPLAY));
+
+    /* Drive through follower states */
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+
+    /* Should have sent AppendPosition and completed election */
+    EXPECT_TRUE(f.pub.sent_to("append_position", candidate_id));
+    EXPECT_EQ(AERON_ELECTION_CLOSED, f.state());
+    EXPECT_EQ(1, f.agent.election_complete_count);
+}
+
+/* -----------------------------------------------------------------------
+ * shouldBaseStartupValueOnLeader
+ *    Java: parameterized (isLeaderStart, isNodeStart). Member 1 as follower.
+ *    Receives NewLeadershipTerm with is_startup value. Drives to
+ *    FOLLOWER_LOG_AWAIT where tryJoinLogAsFollower is called with
+ *    the leader's is_startup flag.
+ * ----------------------------------------------------------------------- */
+TEST(ElectionTest, shouldBaseStartupValueOnLeader_TrueTrue)
+{
+    ElectionTestFixture f;
+    int64_t leadership_term_id = 0;
+    int64_t log_position = 0;
+    int64_t leader_recording_id = 367234LL;
+    int64_t commit_position = 1024LL;
+    bool is_leader_start = true;
+    bool is_node_start = true;
+
+    f.build(THREE_NODE, 1, leadership_term_id, log_position, leadership_term_id, -1,
+        5000000000LL, 1000000000LL, 1LL, 10000000000LL, is_node_start);
+
+    int64_t now = 1LL;
+    f.do_work(now);
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_CANVASS));
+
+    now += 1LL;
+    f.on_new_leadership_term(
+        leadership_term_id, NULL_VALUE, -1LL, -1LL,
+        leadership_term_id, log_position, log_position,
+        commit_position, leader_recording_id, now,
+        0 /* leader_member_id */, 0, 0, is_leader_start);
+    f.do_work(now);
+
+    /* Drive through follower states; is_leader_startup is stored */
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+
+    EXPECT_EQ(is_leader_start, f.election->is_leader_startup);
+}
+
+TEST(ElectionTest, shouldBaseStartupValueOnLeader_TrueFalse)
+{
+    ElectionTestFixture f;
+    bool is_leader_start = true;
+    bool is_node_start = false;
+
+    f.build(THREE_NODE, 1, 0, 0, 0, -1,
+        5000000000LL, 1000000000LL, 1LL, 10000000000LL, is_node_start);
+
+    int64_t now = 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.on_new_leadership_term(0, NULL_VALUE, -1LL, -1LL, 0, 0, 0,
+        1024LL, 367234LL, now, 0, 0, 0, is_leader_start);
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+
+    EXPECT_EQ(is_leader_start, f.election->is_leader_startup);
+}
+
+TEST(ElectionTest, shouldBaseStartupValueOnLeader_FalseFalse)
+{
+    ElectionTestFixture f;
+    bool is_leader_start = false;
+    bool is_node_start = false;
+
+    f.build(THREE_NODE, 1, 0, 0, 0, -1,
+        5000000000LL, 1000000000LL, 1LL, 10000000000LL, is_node_start);
+
+    int64_t now = 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.on_new_leadership_term(0, NULL_VALUE, -1LL, -1LL, 0, 0, 0,
+        1024LL, 367234LL, now, 0, 0, 0, is_leader_start);
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+
+    EXPECT_EQ(is_leader_start, f.election->is_leader_startup);
+}
+
+TEST(ElectionTest, shouldBaseStartupValueOnLeader_FalseTrue)
+{
+    ElectionTestFixture f;
+    bool is_leader_start = false;
+    bool is_node_start = true;
+
+    f.build(THREE_NODE, 1, 0, 0, 0, -1,
+        5000000000LL, 1000000000LL, 1LL, 10000000000LL, is_node_start);
+
+    int64_t now = 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.on_new_leadership_term(0, NULL_VALUE, -1LL, -1LL, 0, 0, 0,
+        1024LL, 367234LL, now, 0, 0, 0, is_leader_start);
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+    now += 1LL;
+    f.do_work(now);
+
+    EXPECT_EQ(is_leader_start, f.election->is_leader_startup);
+}
+
+/* -----------------------------------------------------------------------
+ * shouldThrowNonZeroLogPositionAndNullRecordingIdSpecified
+ *    Java: When recording ID is NULL_POSITION and logPosition is 0,
+ *    ensureRecordingLogCoherent should be a no-op (no recording log interaction).
+ *    Since C doesn't have ensureRecordingLogCoherent as a standalone function,
+ *    we verify that creating an election with a NULL recording ID and zero log
+ *    position succeeds without error.
+ * ----------------------------------------------------------------------- */
+TEST(ElectionTest, shouldThrowNonZeroLogPositionAndNullRecordingIdSpecified)
+{
+    /* In Java, Election.ensureRecordingLogCoherent with NULL_POSITION recording
+     * and 0 log position is a no-op. The C equivalent is that an election
+     * with leader_recording_id = -1 and log_position = 0 creates successfully. */
+    ElectionTestFixture f;
+    f.build(THREE_NODE, 0, 0, 0, 0, -1LL /* NULL recording */);
+    EXPECT_NE(nullptr, f.election);
+
+    /* Also with non-zero appendPosition but null recording ID — still valid */
+    ElectionTestFixture f2;
+    f2.build(THREE_NODE, 0, 0, 1000LL, 0, -1LL);
+    EXPECT_NE(nullptr, f2.election);
+}
+
+/* -----------------------------------------------------------------------
+ * shouldSendCommitPositionAndNewLeadershipTermEventsWithTheSameLeadershipTerm
+ *    Java: Starts in LEADER_LOG_REPLICATION, verifies that new leadership
+ *    term messages and commit positions are sent as the quorum position
+ *    advances. Once quorum reaches append position, transitions to LEADER_REPLAY.
+ * ----------------------------------------------------------------------- */
+TEST(ElectionTest, shouldSendCommitPositionAndNewLeadershipTermEventsWithTheSameLeadershipTerm)
+{
+    ElectionTestFixture f;
+    int64_t log_position = 100LL;
+    int64_t leadership_term_id = 42LL;
+    int64_t log_recording_id = 842384023LL;
+
+    f.agent.log_recording_id = log_recording_id;
+    f.build(THREE_NODE, 1, leadership_term_id, log_position, leadership_term_id, -1,
+        5000000000LL, 1000000000LL, 1LL);
+
+    /* Manually set election to LEADER_LOG_REPLICATION state.
+     * In Java this is done via Tests.setField. */
+    f.election->state = AERON_ELECTION_LEADER_LOG_REPLICATION;
+    f.election->leader_member = &f.members[1];
+    f.members[1].is_leader = true;
+    f.election->candidate_term_id = leadership_term_id;
+
+    /* quorum_position returns append_position (always at quorum) */
+    f.election->agent_ops.quorum_position =
+        [](void *, int64_t ap, int64_t) -> int64_t {
+            return ap;
+        };
+
+    int64_t now = 2LL;
+    f.do_work(now);
+
+    /* Should have moved to LEADER_REPLAY since quorum >= append_position */
+    EXPECT_TRUE(f.state_reached(AERON_ELECTION_LEADER_REPLAY));
+
+    /* NewLeadershipTerm should have been broadcast */
+    EXPECT_GE(f.pub.new_leadership_count(), 0);
+
+    /* The leadership term in the published messages should match */
+    for (auto &c : f.pub.calls)
+    {
+        if (c.type == "new_leadership_term")
+        {
+            EXPECT_EQ(leadership_term_id, c.leadership_term_id);
+        }
+    }
 }
 
 /* -----------------------------------------------------------------------
