@@ -128,13 +128,14 @@ protected:
         ctx->ingress_channel     = strdup("aeron:udp");
         ctx->ingress_stream_id   = 101;
 
-        ctx->startup_canvass_timeout_ns    = INT64_C(500000000);
-        ctx->election_timeout_ns           = INT64_C(1000000000);
+        /* Align with Java TestCluster timeout constants */
+        ctx->startup_canvass_timeout_ns    = INT64_C(2000000000);
+        ctx->election_timeout_ns           = INT64_C(500000000);
         ctx->election_status_interval_ns   = INT64_C(100000000);
-        ctx->leader_heartbeat_timeout_ns   = INT64_C(5000000000);
-        ctx->leader_heartbeat_interval_ns  = INT64_C(200000000);
+        ctx->leader_heartbeat_timeout_ns   = INT64_C(1000000000);
+        ctx->leader_heartbeat_interval_ns  = INT64_C(100000000);
         ctx->session_timeout_ns            = INT64_C(10000000000);
-        ctx->termination_timeout_ns        = INT64_C(5000000000);
+        ctx->termination_timeout_ns        = INT64_C(1000000000);
 
         /* Archive context -- auto-creates its own Aeron client from aeron_directory_name */
         aeron_archive_context_t *arch_ctx = nullptr;
@@ -302,8 +303,7 @@ TEST_F(ThreeNodeClusterTest, shouldTakeAndRestoreSnapshot)
 }
 
 /* DISABLED: Same C archive server IPC double-free bug. */
-/* DISABLED: initial leader election times out before failover can be tested.
- * Needs investigation into 3-node election timing. */
+/* Test leader failover: elect leader, stop it, verify re-election. */
 TEST_F(ThreeNodeClusterTest, shouldFailoverWhenLeaderStopped)
 {
     int appointed = -1;
@@ -314,8 +314,7 @@ TEST_F(ThreeNodeClusterTest, shouldFailoverWhenLeaderStopped)
             << "Failed to create agent " << i << ": " << aeron_errmsg();
     }
 
-    /* Phase 1: Drive election until a leader emerges.
-     * With appointed=-1 all nodes compete; allow enough cycles for jitter to resolve. */
+    /* Phase 1: Drive election until a leader emerges */
     int64_t now_ns = aeron_nano_clock();
     int leader_idx = -1;
     for (int tick = 0; tick < 2000; tick++)
@@ -363,12 +362,10 @@ TEST_F(ThreeNodeClusterTest, shouldFailoverWhenLeaderStopped)
     delete m_nodes[stopped_leader];
     m_nodes[stopped_leader] = nullptr;
 
-    /* Phase 3: Advance time past leader_heartbeat_timeout_ns (5s) */
-    now_ns += INT64_C(6000000000);
+    /* Phase 3: Advance time past leader_heartbeat_timeout_ns (1s) */
+    now_ns += INT64_C(2000000000);
 
-    /* Phase 4: Drive surviving nodes through new election.
-     * With 2 competing nodes (quorum=2), split votes can occur.
-     * Allow enough cycles for the random jitter to resolve. */
+    /* Phase 4: Drive surviving nodes through new election */
     int new_leader_idx = -1;
     for (int tick = 0; tick < 2000; tick++)
     {
