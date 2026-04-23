@@ -1233,6 +1233,21 @@ int aeron_cluster_election_create(
 
 int aeron_cluster_election_close(aeron_cluster_election_t *election)
 {
+    if (NULL == election) { return 0; }
+
+    /* If a follower log_replication was created (via new_log_replication in
+     * do_follower_log_replication) but never drove to completion, it owns
+     * state — the cluster RecordingReplication wrapper plus an archive
+     * ReplicationSession with an archive_context. Mirrors Java's
+     * Election.close which cancels pending operations before the election
+     * agent is released. */
+    if (NULL != election->log_replication)
+    {
+        election->agent_ops.close_log_replication(
+            election->agent_ops.clientd, election->log_replication);
+        election->log_replication = NULL;
+    }
+
     aeron_free(election);
     return 0;
 }

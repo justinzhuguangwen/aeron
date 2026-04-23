@@ -92,37 +92,43 @@ int aeron_archive_update_channel_session_do_work(aeron_archive_update_channel_se
 
     if (aeron_archive_catalog_find_recording(session->catalog, session->recording_id, &descriptor) == 0)
     {
-        /*
-         * Re-add the recording with the updated channel fields. The catalog's
-         * add_recording allocates the next id, so we use replace semantics by
-         * invalidating the old entry and writing a replacement. However, since
-         * the C catalog API does not yet expose a replace_recording, we
-         * invalidate and re-add with the same fields but updated channels.
-         *
-         * Note: a full production implementation would add a
-         * aeron_archive_catalog_replace_recording function. For now we write
-         * the descriptor back by invalidating the old and adding a new one,
-         * preserving all fields except the channels.
-         *
-         * TODO: implement aeron_archive_catalog_replace_recording for in-place update.
-         */
-        aeron_archive_catalog_invalidate_recording(session->catalog, session->recording_id);
-
-        aeron_archive_catalog_add_recording(
-            session->catalog,
-            descriptor.start_position,
-            descriptor.stop_position,
-            descriptor.start_timestamp,
-            descriptor.stop_timestamp,
-            descriptor.initial_term_id,
-            descriptor.segment_file_length,
-            descriptor.term_buffer_length,
-            descriptor.mtu_length,
-            descriptor.session_id,
-            descriptor.stream_id,
-            session->stripped_channel,
-            session->original_channel,
-            descriptor.source_identity);
+        /* Try in-place replace first (variable-length fields must fit the
+         * existing frame). Fall back to invalidate + add_recording, which
+         * allocates a new recording_id. */
+        if (aeron_archive_catalog_replace_recording(
+                session->catalog,
+                session->recording_id,
+                descriptor.start_position,
+                descriptor.stop_position,
+                descriptor.start_timestamp,
+                descriptor.stop_timestamp,
+                descriptor.initial_term_id,
+                descriptor.segment_file_length,
+                descriptor.term_buffer_length,
+                descriptor.mtu_length,
+                descriptor.session_id,
+                descriptor.stream_id,
+                session->stripped_channel,
+                session->original_channel,
+                descriptor.source_identity) < 0)
+        {
+            aeron_archive_catalog_invalidate_recording(session->catalog, session->recording_id);
+            aeron_archive_catalog_add_recording(
+                session->catalog,
+                descriptor.start_position,
+                descriptor.stop_position,
+                descriptor.start_timestamp,
+                descriptor.stop_timestamp,
+                descriptor.initial_term_id,
+                descriptor.segment_file_length,
+                descriptor.term_buffer_length,
+                descriptor.mtu_length,
+                descriptor.session_id,
+                descriptor.stream_id,
+                session->stripped_channel,
+                session->original_channel,
+                descriptor.source_identity);
+        }
 
         session->send_ok(session->correlation_id, session->callback_clientd);
     }

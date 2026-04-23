@@ -688,3 +688,256 @@ TEST_P(IsActiveParamTest, shouldCheckMemberIsActive)
     m.time_of_last_append_position_ns = c.ts;
     EXPECT_EQ(c.expected, aeron_cluster_member_is_active(&m, c.now, c.timeout));
 }
+
+/* -----------------------------------------------------------------------
+ * Helper: init a stack-allocated member with vote/candidate_term_id
+ * ----------------------------------------------------------------------- */
+static void member_set_vote(
+    aeron_cluster_member_t *m, int32_t id, int64_t candidate_term_id, int vote)
+{
+    memset(m, 0, sizeof(*m));
+    m->id = id;
+    m->candidate_term_id = candidate_term_id;
+    m->vote = vote;
+    m->leadership_term_id = -1;
+    m->log_position = -1;
+    m->time_of_last_append_position_ns = 0;
+    m->is_ballot_sent = false;
+}
+
+/* -----------------------------------------------------------------------
+ * 20 Java-ported test cases
+ * ----------------------------------------------------------------------- */
+
+TEST_F(ClusterMemberTest, isUnanimousCandidateReturnTrueIfTheCandidateHasTheMostUpToDateLog)
+{
+    aeron_cluster_member_t members[3] = {};
+    member_set(&members[0], 10, 2, 100);
+    member_set(&members[1], 20, 8, 6);
+    member_set(&members[2], 30, 10, 800);
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 2, 10, 800);
+
+    EXPECT_TRUE(aeron_cluster_member_is_unanimous_candidate(members, 3, &candidate, -1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousCandidateReturnFalseIfThereIsAMemberWithoutLogPosition)
+{
+    aeron_cluster_member_t members[3] = {};
+    member_set(&members[0], 1, 2, 100);
+    member_set(&members[1], 2, 8, -1);  /* NULL_POSITION */
+    member_set(&members[2], 3, 1, 1);
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 4, 100, 1000);
+
+    EXPECT_FALSE(aeron_cluster_member_is_unanimous_candidate(members, 3, &candidate, -1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousCandidateReturnFalseIfThereIsAMemberWithMoreUpToDateLog)
+{
+    aeron_cluster_member_t members[3] = {};
+    member_set(&members[0], 1, 2, 100);
+    member_set(&members[1], 2, 8, 6);
+    member_set(&members[2], 3, 11, 1000);
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 4, 10, 800);
+
+    EXPECT_FALSE(aeron_cluster_member_is_unanimous_candidate(members, 3, &candidate, -1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousCandidateReturnFalseIfLeaderClosesGracefully)
+{
+    aeron_cluster_member_t members[2] = {};
+    member_set(&members[0], 1, 2, 100);
+    member_set(&members[1], 2, 2, 100);
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 2, 2, 100);
+
+    EXPECT_FALSE(aeron_cluster_member_is_unanimous_candidate(members, 2, &candidate, 1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousLeaderReturnsTrueIfAllNodesVotedWithTrue)
+{
+    aeron_cluster_member_t members[3] = {};
+    const int64_t ct = 42;
+    member_set_vote(&members[0], 1, ct, 1);
+    member_set_vote(&members[1], 2, ct, 1);
+    member_set_vote(&members[2], 3, ct, 1);
+
+    EXPECT_TRUE(aeron_cluster_member_is_unanimous_leader(members, 3, ct, -1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousLeaderReturnsFalseIfThereIsAtLeastOneNegativeVoteForAGivenCandidateTerm)
+{
+    aeron_cluster_member_t members[3] = {};
+    const int64_t ct = 42;
+    member_set_vote(&members[0], 1, ct, 1);
+    member_set_vote(&members[1], 2, ct, 1);
+    member_set_vote(&members[2], 3, ct, 0);  /* FALSE */
+
+    EXPECT_FALSE(aeron_cluster_member_is_unanimous_leader(members, 3, ct, -1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousLeaderReturnsFalseIfNotAllNodesVotedPositively)
+{
+    aeron_cluster_member_t members[3] = {};
+    const int64_t ct = 2;
+    member_set_vote(&members[0], 1, ct, 1);
+    member_set_vote(&members[1], 2, ct, -1);  /* null vote */
+    member_set_vote(&members[2], 3, ct, 1);
+
+    EXPECT_FALSE(aeron_cluster_member_is_unanimous_leader(members, 3, ct, -1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousLeaderReturnsFalseIfNotAllNodesHadTheExpectedCandidateTermId)
+{
+    aeron_cluster_member_t members[3] = {};
+    const int64_t ct = 2;
+    member_set_vote(&members[0], 1, ct, 1);
+    member_set_vote(&members[1], 2, ct + 1, 1);  /* different term */
+    member_set_vote(&members[2], 3, ct, 1);
+
+    EXPECT_FALSE(aeron_cluster_member_is_unanimous_leader(members, 3, ct, -1));
+}
+
+TEST_F(ClusterMemberTest, isUnanimousLeaderReturnsFalseIfLeaderClosesGracefully)
+{
+    aeron_cluster_member_t members[2] = {};
+    const int64_t ct = 7;
+    member_set_vote(&members[0], 1, ct, 1);
+    member_set_vote(&members[1], 2, ct, 1);
+
+    EXPECT_FALSE(aeron_cluster_member_is_unanimous_leader(members, 2, ct, 1));
+}
+
+TEST_F(ClusterMemberTest, isQuorumCandidateReturnTrueWhenQuorumIsReached)
+{
+    aeron_cluster_member_t members[5] = {};
+    member_set(&members[0], 10, 2, 100);
+    member_set(&members[1], 20, 18, 600);
+    member_set(&members[2], 30, 10, 800);
+    member_set(&members[3], 40, 9, 800);
+    member_set(&members[4], 50, 10, 700);
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 2, 10, 800);
+
+    EXPECT_TRUE(aeron_cluster_member_is_quorum_candidate_for(members, 5, &candidate));
+}
+
+TEST_F(ClusterMemberTest, isQuorumCandidateReturnFalseWhenQuorumIsNotReached)
+{
+    aeron_cluster_member_t members[5] = {};
+    member_set(&members[0], 10, 2, 100);
+    member_set(&members[1], 20, 18, 600);
+    member_set(&members[2], 30, 10, 800);
+    member_set(&members[3], 40, 19, 800);
+    member_set(&members[4], 50, 10, 1000);
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 2, 10, 800);
+
+    EXPECT_FALSE(aeron_cluster_member_is_quorum_candidate_for(members, 5, &candidate));
+}
+
+TEST_F(ClusterMemberTest, isQuorumLeaderReturnsTrueWhenQuorumIsReached)
+{
+    aeron_cluster_member_t members[5] = {};
+    const int64_t ct = -5;
+    member_set_vote(&members[0], 1, ct, 1);       /* TRUE */
+    member_set_vote(&members[1], 2, ct * 2, 0);   /* FALSE, different term */
+    member_set_vote(&members[2], 3, ct, -1);       /* null */
+    member_set_vote(&members[3], 4, ct, 1);        /* TRUE */
+    member_set_vote(&members[4], 5, ct, 1);        /* TRUE */
+
+    EXPECT_TRUE(aeron_cluster_member_is_quorum_leader(members, 5, ct));
+}
+
+TEST_F(ClusterMemberTest, isQuorumLeaderReturnsFalseWhenQuorumIsNotReached)
+{
+    aeron_cluster_member_t members[3] = {};
+    const int64_t ct = 2;
+    member_set_vote(&members[0], 1, ct, 1);       /* TRUE */
+    member_set_vote(&members[1], 2, ct, -1);      /* null */
+    member_set_vote(&members[2], 3, ct + 5, 1);   /* TRUE but different term */
+
+    EXPECT_FALSE(aeron_cluster_member_is_quorum_leader(members, 3, ct));
+}
+
+TEST_F(ClusterMemberTest, isQuorumLeaderReturnsFalseIfAtLeastOneNegativeVoteIsDetected)
+{
+    aeron_cluster_member_t members[3] = {};
+    const int64_t ct = 8;
+    member_set_vote(&members[0], 1, ct, 1);   /* TRUE */
+    member_set_vote(&members[1], 2, ct, 0);   /* FALSE */
+    member_set_vote(&members[2], 3, ct, 1);   /* TRUE */
+
+    EXPECT_FALSE(aeron_cluster_member_is_quorum_leader(members, 3, ct));
+}
+
+TEST_F(ClusterMemberTest, hasQuorumAtPositionReturnTrueIfQuorumIsAtPosition)
+{
+    aeron_cluster_member_t members[5] = {};
+    member_set(&members[0], 10, 2, 100);
+    member_set(&members[1], 20, 10, 600);
+    member_set(&members[2], 30, 10, 800);
+    member_set(&members[3], 40, 19, 800);
+    member_set(&members[4], 50, 10, 1000);
+
+    EXPECT_TRUE(aeron_cluster_member_has_quorum_at_position(members, 5, 10, 600, 5, 10));
+}
+
+TEST_F(ClusterMemberTest, hasQuorumAtPositionReturnFalseIfNotAQuorum)
+{
+    aeron_cluster_member_t members[5] = {};
+    member_set(&members[0], 10, 2, 100);
+    member_set(&members[1], 20, 18, 600);
+    member_set(&members[2], 30, 10, 800);
+    member_set(&members[3], 40, 19, 800);
+    member_set(&members[4], 50, 10, 1000);
+
+    EXPECT_FALSE(aeron_cluster_member_has_quorum_at_position(members, 5, 10, 800, 0, 10));
+}
+
+TEST_F(ClusterMemberTest, shouldNotVoteIfHasNoPosition)
+{
+    aeron_cluster_member_t member{};
+    member_set(&member, 1, 0, -1);  /* NULL_POSITION */
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 2, 0, 100);
+
+    EXPECT_FALSE(aeron_cluster_member_will_vote_for(&member, &candidate));
+}
+
+TEST_F(ClusterMemberTest, shouldNotVoteIfHasMoreLog)
+{
+    aeron_cluster_member_t member{};
+    member_set(&member, 1, 0, 500);
+
+    aeron_cluster_member_t candidate{};
+    member_set(&candidate, 2, 0, 100);
+
+    EXPECT_FALSE(aeron_cluster_member_will_vote_for(&member, &candidate));
+}
+
+TEST_F(ClusterMemberTest, shouldReturnFalseIfLogPositionIsLessThan)
+{
+    aeron_cluster_member_t member{};
+    member_set(&member, 1, 6, 100);
+
+    EXPECT_FALSE(aeron_cluster_member_has_reached_position(&member, 6, 500, 5, 10));
+}
+
+TEST_F(ClusterMemberTest, shouldReturnFalseIfNotActiveWhenDoingPositionChecks)
+{
+    aeron_cluster_member_t member{};
+    member_set(&member, 1, 42, 500);
+
+    /* now_ns=5, timeout_ns=3: ts(0)+3=3 < 5 -> not active */
+    EXPECT_FALSE(aeron_cluster_member_has_reached_position(&member, 42, 500, 5, 3));
+}

@@ -33,6 +33,7 @@
 #include "aeron_cluster_client/adminResponseCode.h"
 
 #include "consensus/aeron_cluster_consensus_publisher.h"
+#include "consensus/aeron_consensus_module_configuration.h"
 
 #define NULL_VALUE INT64_C(-1)
 
@@ -154,7 +155,7 @@ static void reset_agent(aeron_cluster_backup_agent_t *agent)
 /* -----------------------------------------------------------------------
  * LogSourceValidator — mirrors Java LogSourceValidator.isAcceptable()
  * ----------------------------------------------------------------------- */
-static bool log_source_is_acceptable(
+bool aeron_cluster_backup_log_source_is_acceptable(
     aeron_cluster_backup_source_type_t source_type,
     int32_t leader_member_id,
     int32_t member_id)
@@ -211,7 +212,7 @@ static void on_backup_response(
     {
         return;  /* memberId is null — retry for a compatible node */
     }
-    if (!log_source_is_acceptable(
+    if (!aeron_cluster_backup_log_source_is_acceptable(
         agent->ctx->source_type, agent->leader_member_id, agent->log_supplier_member_id))
     {
         return;  /* member does not match the configured source type */
@@ -1191,4 +1192,40 @@ int aeron_cluster_backup_launch(
     }
 
     return 0;
+}
+
+/* -----------------------------------------------------------------------
+ * replayStartPosition — mirrors Java ClusterBackupAgent.replayStartPosition()
+ * ----------------------------------------------------------------------- */
+int64_t aeron_cluster_backup_agent_replay_start_position(
+    const aeron_cluster_recording_log_entry_t *last_term,
+    const aeron_cluster_backup_snapshot_t *snapshots,
+    int snapshot_count,
+    aeron_cluster_backup_replay_start_t replay_start,
+    int64_t (*get_stop_position)(void *clientd, int64_t recording_id),
+    void *archive_clientd)
+{
+    if (NULL != last_term)
+    {
+        return get_stop_position(archive_clientd, last_term->recording_id);
+    }
+
+    if (AERON_CLUSTER_BACKUP_REPLAY_START_BEGINNING == replay_start)
+    {
+        return AERON_NULL_VALUE;
+    }
+
+    int64_t replay_start_position = AERON_NULL_VALUE;
+    for (int i = 0; i < snapshot_count; i++)
+    {
+        if (AERON_CM_SERVICE_ID == snapshots[i].service_id)
+        {
+            if (replay_start_position < snapshots[i].log_position)
+            {
+                replay_start_position = snapshots[i].log_position;
+            }
+        }
+    }
+
+    return replay_start_position;
 }

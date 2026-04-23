@@ -256,6 +256,17 @@ void aeron_consensus_module_agent_on_standby_snapshot(
     int32_t *service_ids,
     int snapshot_count);
 
+/**
+ * Handle an ingress message with an unknown schema ID.
+ * Delegates to the registered ConsensusModuleExtension if the schema matches,
+ * otherwise reports an error. Mirrors Java ConsensusModuleAgent.onExtensionMessage().
+ */
+void aeron_consensus_module_agent_on_extension_message(
+    aeron_consensus_module_agent_t *agent,
+    int32_t acting_block_length, int32_t template_id,
+    int32_t schema_id, int32_t acting_version,
+    const uint8_t *buffer, size_t offset, size_t length);
+
 #ifdef __cplusplus
 }
 #endif

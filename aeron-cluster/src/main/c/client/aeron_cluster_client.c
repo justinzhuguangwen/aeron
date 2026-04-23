@@ -68,7 +68,7 @@ int aeron_cluster_create(
     _cluster->cluster_session_id = cluster_session_id;
     _cluster->leadership_term_id = leadership_term_id;
     _cluster->leader_member_id   = leader_member_id;
-    _cluster->state              = AERON_CLUSTER_SESSION_CONNECTED;
+    _cluster->state              = AERON_CLUSTER_CLIENT_SESSION_CONNECTED;
     _cluster->is_in_callback     = false;
     _cluster->state_deadline_ns  = INT64_MAX;
     _cluster->async_reconnect_pub = NULL;
@@ -114,9 +114,9 @@ int aeron_cluster_close(aeron_cluster_t *cluster)
         return 0;
     }
 
-    if (cluster->state != AERON_CLUSTER_SESSION_CLOSED)
+    if (cluster->state != AERON_CLUSTER_CLIENT_SESSION_CLOSED)
     {
-        cluster->state = AERON_CLUSTER_SESSION_CLOSED;
+        cluster->state = AERON_CLUSTER_CLIENT_SESSION_CLOSED;
 
         /* Send close session so the cluster can clean up server-side */
         if (NULL != cluster->ingress_proxy)
@@ -170,7 +170,7 @@ int aeron_cluster_close(aeron_cluster_t *cluster)
  * ----------------------------------------------------------------------- */
 bool aeron_cluster_is_closed(aeron_cluster_t *cluster)
 {
-    return cluster->state == AERON_CLUSTER_SESSION_CLOSED;
+    return cluster->state == AERON_CLUSTER_CLIENT_SESSION_CLOSED;
 }
 
 aeron_cluster_context_t *aeron_cluster_context(aeron_cluster_t *cluster)
@@ -384,7 +384,7 @@ int64_t aeron_cluster_send_admin_request(
 /* -----------------------------------------------------------------------
  * state accessor
  * ----------------------------------------------------------------------- */
-aeron_cluster_session_state_t aeron_cluster_state(aeron_cluster_t *cluster)
+aeron_cluster_client_session_state_t aeron_cluster_state(aeron_cluster_t *cluster)
 {
     return cluster->state;
 }
@@ -468,12 +468,12 @@ static void cluster_begin_leader_reconnect(aeron_cluster_t *cluster, const char 
     if (aeron_async_add_publication(&async_pub, ctx->aeron, new_channel,
         ctx->ingress_stream_id) < 0)
     {
-        cluster->state = AERON_CLUSTER_SESSION_CLOSED;
+        cluster->state = AERON_CLUSTER_CLIENT_SESSION_CLOSED;
         return;
     }
 
     cluster->async_reconnect_pub = async_pub;
-    cluster->state = AERON_CLUSTER_SESSION_AWAIT_NEW_LEADER_CONNECTION;
+    cluster->state = AERON_CLUSTER_CLIENT_SESSION_AWAIT_NEW_LEADER_CONNECTION;
     cluster->state_deadline_ns = aeron_nano_clock() +
         (ctx->new_leader_timeout_ns > 0 ? ctx->new_leader_timeout_ns : ctx->message_timeout_ns);
 }
@@ -501,7 +501,7 @@ static void cluster_process_poller_events(aeron_cluster_t *cluster)
         }
         else if (poller->event_code == (int32_t)aeron_cluster_client_eventCode_CLOSED)
         {
-            cluster->state = AERON_CLUSTER_SESSION_CLOSED;
+            cluster->state = AERON_CLUSTER_CLIENT_SESSION_CLOSED;
         }
     }
     else if (poller->template_id == AERON_CLUSTER_NEW_LEADER_EVENT_TEMPLATE_ID &&
@@ -509,7 +509,7 @@ static void cluster_process_poller_events(aeron_cluster_t *cluster)
     {
         /* Transition to AWAIT_NEW_LEADER, then begin async reconnect.
          * The state machine in poll_egress drives completion. */
-        cluster->state = AERON_CLUSTER_SESSION_AWAIT_NEW_LEADER;
+        cluster->state = AERON_CLUSTER_CLIENT_SESSION_AWAIT_NEW_LEADER;
         cluster_begin_leader_reconnect(cluster, poller->detail);
     }
 }
@@ -520,13 +520,13 @@ static void cluster_process_poller_events(aeron_cluster_t *cluster)
  * ----------------------------------------------------------------------- */
 int aeron_cluster_poll_egress(aeron_cluster_t *cluster)
 {
-    if (cluster->state == AERON_CLUSTER_SESSION_CLOSED)
+    if (cluster->state == AERON_CLUSTER_CLIENT_SESSION_CLOSED)
     {
         return 0;
     }
 
     /* Drive async reconnect: poll for the new publication to be established */
-    if (cluster->state == AERON_CLUSTER_SESSION_AWAIT_NEW_LEADER_CONNECTION)
+    if (cluster->state == AERON_CLUSTER_CLIENT_SESSION_AWAIT_NEW_LEADER_CONNECTION)
     {
         if (NULL != cluster->async_reconnect_pub)
         {
@@ -547,14 +547,14 @@ int aeron_cluster_poll_egress(aeron_cluster_t *cluster)
                     cluster->ingress_proxy->is_exclusive  = false;
                 }
                 cluster->async_reconnect_pub = NULL;
-                cluster->state               = AERON_CLUSTER_SESSION_CONNECTED;
+                cluster->state               = AERON_CLUSTER_CLIENT_SESSION_CONNECTED;
                 cluster->state_deadline_ns   = INT64_MAX;
             }
             else if (rc < 0)
             {
                 /* Registration failed — close the session */
                 cluster->async_reconnect_pub = NULL;
-                cluster->state = AERON_CLUSTER_SESSION_CLOSED;
+                cluster->state = AERON_CLUSTER_CLIENT_SESSION_CLOSED;
                 return 0;
             }
             /* else rc == 0: still pending, check timeout below */
@@ -562,7 +562,7 @@ int aeron_cluster_poll_egress(aeron_cluster_t *cluster)
 
         /* Timeout check: if deadline has passed, try next endpoint or close.
          * Mirrors Java's endpoint rotation on reconnect failure. */
-        if (cluster->state == AERON_CLUSTER_SESSION_AWAIT_NEW_LEADER_CONNECTION &&
+        if (cluster->state == AERON_CLUSTER_CLIENT_SESSION_AWAIT_NEW_LEADER_CONNECTION &&
             aeron_nano_clock() > cluster->state_deadline_ns)
         {
             cluster->async_reconnect_pub = NULL;
@@ -572,14 +572,14 @@ int aeron_cluster_poll_egress(aeron_cluster_t *cluster)
                 cluster_begin_leader_reconnect(cluster, cluster->last_endpoints);
                 /* If begin_leader_reconnect succeeded, state is AWAIT_NEW_LEADER_CONNECTION again.
                  * If it failed (no more endpoints), state is CLOSED. */
-                if (cluster->state != AERON_CLUSTER_SESSION_CLOSED)
+                if (cluster->state != AERON_CLUSTER_CLIENT_SESSION_CLOSED)
                 {
                     return 0; /* retry with next endpoint */
                 }
             }
             else
             {
-                cluster->state = AERON_CLUSTER_SESSION_CLOSED;
+                cluster->state = AERON_CLUSTER_CLIENT_SESSION_CLOSED;
             }
             return 0;
         }
@@ -619,6 +619,6 @@ void aeron_cluster_track_ingress_result(aeron_cluster_t *cluster, int64_t result
 {
     if (AERON_PUBLICATION_CLOSED == result)
     {
-        cluster->state = AERON_CLUSTER_SESSION_CLOSED;
+        cluster->state = AERON_CLUSTER_CLIENT_SESSION_CLOSED;
     }
 }

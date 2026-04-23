@@ -168,7 +168,10 @@ int aeron_cluster_recording_replication_poll(
         {
             replication->has_replication_ended = true;
             bool stopped = false;
-            aeron_archive_try_stop_replication(&stopped, replication->archive, replication->replication_id);
+            if (NULL != replication->archive)
+            {
+                aeron_archive_try_stop_replication(&stopped, replication->archive, replication->replication_id);
+            }
         }
 
         if (AERON_NULL_VALUE == replication->stop_position ||

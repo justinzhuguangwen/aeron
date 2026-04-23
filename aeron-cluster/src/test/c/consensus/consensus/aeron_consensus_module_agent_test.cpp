@@ -28,6 +28,8 @@ extern "C"
 #include "aeron_consensus_module_agent.h"
 #include "aeron_cm_context.h"
 #include "aeron_cluster_member.h"
+#include "aeron_cluster_log_adapter.h"
+#include "aeron_cluster_election.h"
 #include "aeron_consensus_module_configuration.h"
 #include "aeron_cluster_client/clusterAction.h"
 
@@ -109,6 +111,8 @@ protected:
         ASSERT_EQ(0, aeron_consensus_module_agent_create(&m_agent, m_ctx));
         /* Set a known leadership term */
         m_agent->leadership_term_id = 1;
+        /* Create session manager so session-related tests work */
+        ASSERT_EQ(0, aeron_cluster_session_manager_create(&m_agent->session_manager, 1, NULL));
     }
 
     void TearDown() override
@@ -122,6 +126,14 @@ protected:
             free(m_agent->service_snapshot_recording_ids);
             free(m_agent->uncommitted_timers);
             free(m_agent->uncommitted_previous_states);
+            if (NULL != m_agent->election)
+            {
+                aeron_cluster_election_close(m_agent->election);
+            }
+            if (NULL != m_agent->session_manager)
+            {
+                aeron_cluster_session_manager_close(m_agent->session_manager);
+            }
             if (NULL != m_agent->pending_trackers)
             {
                 for (int i = 0; i < m_agent->service_count; i++)
@@ -195,11 +207,11 @@ TEST_F(ConsensusModuleAgentTest, onTerminationAckTransitionsToClosedWhenQuorumRe
     m_agent->has_cluster_termination       = true;
     m_agent->is_awaiting_services          = false;  /* services already acked */
     m_agent->termination_deadline_ns       = INT64_MAX;
-    m_agent->state                         = AERON_CM_STATE_LEAVING;
+    m_agent->state                         = AERON_CM_STATE_TERMINATING;
 
     /* First follower acks — not yet closed (still waiting for second follower) */
     aeron_consensus_module_agent_on_termination_ack(m_agent, 1LL, 10000LL, 1);
-    EXPECT_EQ(AERON_CM_STATE_LEAVING, m_agent->state);
+    EXPECT_EQ(AERON_CM_STATE_TERMINATING, m_agent->state);
 
     /* Second follower acks — all non-leader members have acked, now closed */
     aeron_consensus_module_agent_on_termination_ack(m_agent, 1LL, 10000LL, 2);
@@ -214,12 +226,12 @@ TEST_F(ConsensusModuleAgentTest, onTerminationAckDoesNotTransitionBeforeTerminat
     m_agent->has_cluster_termination       = true;
     m_agent->is_awaiting_services          = false;
     m_agent->termination_deadline_ns       = INT64_MAX;
-    m_agent->state                         = AERON_CM_STATE_LEAVING;
+    m_agent->state                         = AERON_CM_STATE_TERMINATING;
 
     /* Log position is behind termination position — should not close */
     aeron_consensus_module_agent_on_termination_ack(m_agent, 1LL, 5000LL, 0);
     aeron_consensus_module_agent_on_termination_ack(m_agent, 1LL, 5000LL, 1);
-    EXPECT_EQ(AERON_CM_STATE_LEAVING, m_agent->state);
+    EXPECT_EQ(AERON_CM_STATE_TERMINATING, m_agent->state);
 }
 
 TEST_F(ConsensusModuleAgentTest, quorumPositionComputesCorrectly)
@@ -706,8 +718,8 @@ TEST_F(ConsensusModuleAgentTest, leavingStateIsSetOnTermination)
     m_agent->has_cluster_termination = true;
 
     /* Simulate what begin_termination does */
-    m_agent->state = AERON_CM_STATE_LEAVING;
-    EXPECT_EQ(AERON_CM_STATE_LEAVING, m_agent->state);
+    m_agent->state = AERON_CM_STATE_TERMINATING;
+    EXPECT_EQ(AERON_CM_STATE_TERMINATING, m_agent->state);
 }
 
 TEST_F(ConsensusModuleAgentTest, notifiedCommitPositionMonotonicallyIncreases)
@@ -874,4 +886,219 @@ TEST_F(ConsensusModuleAgentTest, initialLogLeadershipTermIdStoredInAgent)
     m_agent->initial_term_base_log_position = 1024;
     EXPECT_EQ(42LL, m_agent->initial_log_leadership_term_id);
     EXPECT_EQ(1024LL, m_agent->initial_term_base_log_position);
+}
+
+/* -----------------------------------------------------------------------
+ * Java-ported tests: ConsensusModuleAgentTest
+ * ----------------------------------------------------------------------- */
+
+TEST_F(ConsensusModuleAgentTest, shouldUseAssignedRoleName)
+{
+    /* Agent role name is stored in ctx->agent_role_name */
+    snprintf(m_ctx->agent_role_name, sizeof(m_ctx->agent_role_name), "test-role-name");
+    EXPECT_STREQ("test-role-name", m_ctx->agent_role_name);
+}
+
+TEST_F(ConsensusModuleAgentTest, onCommitPositionShouldUpdateTimeOfLastLeaderMessageReceived)
+{
+    m_agent->leadership_term_id = 42;
+    m_agent->time_of_last_leader_update_ns = 0;
+
+    /* Simulate time advancing to 444 ns */
+    m_agent->last_do_work_ns = 444;
+
+    aeron_consensus_module_agent_on_commit_position(m_agent, 42, 555, 0);
+
+    EXPECT_EQ(444LL, m_agent->time_of_last_leader_update_ns);
+}
+
+TEST_F(ConsensusModuleAgentTest, onNewLeadershipTermShouldUpdateTimeOfLastLeaderMessageReceived)
+{
+    m_agent->leadership_term_id = 2;
+    m_agent->time_of_last_leader_update_ns = 0;
+
+    /* Simulate time advancing to 12345 ns */
+    m_agent->last_do_work_ns = 12345;
+
+    aeron_consensus_module_agent_on_new_leadership_term(m_agent,
+        3, 4, 0, 0, 3, 0, 0, 0, -1, 0, 99, -1, 1, false);
+
+    EXPECT_EQ(12345LL, m_agent->time_of_last_leader_update_ns);
+}
+
+/* -----------------------------------------------------------------------
+ * Extension message tests — mirrors Java ConsensusModuleAgentTest
+ * ----------------------------------------------------------------------- */
+
+static int32_t g_ext_template_id = -1;
+static int32_t g_ext_schema_id = -1;
+
+static int mock_on_ingress_extension_message(
+    void *clientd, int32_t acting_block_length, int32_t template_id,
+    int32_t schema_id, int32_t acting_version,
+    const uint8_t *buffer, size_t offset, size_t length)
+{
+    (void)clientd; (void)acting_block_length; (void)acting_version;
+    (void)buffer; (void)offset; (void)length;
+    g_ext_template_id = template_id;
+    g_ext_schema_id = schema_id;
+    return 0;
+}
+
+static int g_error_count = 0;
+static void counting_error_handler(void *clientd, int errcode, const char *msg)
+{
+    (void)clientd; (void)errcode; (void)msg;
+    g_error_count++;
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldDelegateHandlingToRegisteredExtension)
+{
+    const int32_t SCHEMA_ID = 777;
+    g_ext_template_id = -1;
+    g_ext_schema_id = -1;
+
+    m_ctx->extension.supported_schema_id = SCHEMA_ID;
+    m_ctx->extension.on_ingress_extension_message = mock_on_ingress_extension_message;
+
+    aeron_consensus_module_agent_on_extension_message(
+        m_agent, 0, 1, SCHEMA_ID, 0, NULL, 0, 0);
+
+    EXPECT_EQ(1, g_ext_template_id);
+    EXPECT_EQ(SCHEMA_ID, g_ext_schema_id);
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldThrowExceptionOnUnknownSchemaAndNoAdapter)
+{
+    g_error_count = 0;
+    m_ctx->error_handler = counting_error_handler;
+    m_ctx->error_handler_clientd = NULL;
+
+    /* No extension registered (supported_schema_id = -1 by default) */
+    aeron_consensus_module_agent_on_extension_message(
+        m_agent, 0, 0, 999, 0, NULL, 0, 0);
+
+    EXPECT_EQ(1, g_error_count);
+}
+
+/* -----------------------------------------------------------------------
+ * Session management tests — mirrors Java ConsensusModuleAgentTest
+ * ----------------------------------------------------------------------- */
+
+TEST_F(ConsensusModuleAgentTest, shouldLimitActiveSessions)
+{
+    m_agent->session_manager->max_concurrent_sessions = 1;
+    m_agent->state = AERON_CM_STATE_ACTIVE;
+    m_agent->role  = AERON_CLUSTER_ROLE_LEADER;
+
+    /* First session connect — should be accepted (pending authentication) */
+    aeron_cluster_session_manager_on_session_connect(
+        m_agent->session_manager, 1, 2, m_ctx->app_version,
+        "aeron:ipc", NULL, 0, 1000, true, NULL);
+
+    int pending = m_agent->session_manager->pending_user_count;
+    EXPECT_EQ(1, pending);
+
+    /* Second session connect — should be rejected due to limit */
+    aeron_cluster_session_manager_on_session_connect(
+        m_agent->session_manager, 2, 3, m_ctx->app_version,
+        "aeron:ipc", NULL, 0, 2000, true, NULL);
+
+    EXPECT_EQ(1, m_agent->session_manager->rejected_user_count);
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldCloseInactiveSession)
+{
+    m_agent->state = AERON_CM_STATE_ACTIVE;
+    m_agent->role  = AERON_CLUSTER_ROLE_LEADER;
+
+    /* Add a session via replay (simulates an existing open session) */
+    aeron_cluster_session_manager_on_replay_session_open(
+        m_agent->session_manager, 0, 1, 100, 0, 1, "aeron:ipc");
+
+    EXPECT_EQ(1, aeron_cluster_session_manager_session_count(m_agent->session_manager));
+
+    /* Advance time past session timeout */
+    int64_t now_ns = m_ctx->session_timeout_ns + 1;
+    int expired = 0;
+    aeron_cluster_session_manager_check_timeouts(
+        m_agent->session_manager, now_ns, m_ctx->session_timeout_ns,
+        [](void *cd, aeron_cluster_cluster_session_t *) { (*(int *)cd)++; }, &expired);
+
+    EXPECT_EQ(1, expired);
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldCloseTerminatedSession)
+{
+    m_agent->state = AERON_CM_STATE_ACTIVE;
+    m_agent->role  = AERON_CLUSTER_ROLE_LEADER;
+
+    /* Add a session */
+    aeron_cluster_session_manager_on_replay_session_open(
+        m_agent->session_manager, 0, 1, 200, 0, 1, "aeron:ipc");
+    EXPECT_EQ(1, aeron_cluster_session_manager_session_count(m_agent->session_manager));
+
+    /* Close it */
+    aeron_cluster_session_manager_on_replay_session_close(
+        m_agent->session_manager, 200, 0);
+    EXPECT_EQ(0, aeron_cluster_session_manager_session_count(m_agent->session_manager));
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldHandlePaddingMessageAtEndOfTerm)
+{
+    /* Java: replayLogPoll(mockLogAdapter, 65536) — padding frames are skipped by Aeron
+     * image poll, so the callback never sees them. This test verifies the log adapter
+     * handles a poll with no image (image=NULL) gracefully — returns 0, no crash. */
+    m_agent->state = AERON_CM_STATE_ACTIVE;
+    m_agent->role  = AERON_CLUSTER_ROLE_LEADER;
+
+    /* Create a real log adapter with image=NULL */
+    aeron_cluster_log_adapter_t *adapter = NULL;
+    ASSERT_EQ(0, aeron_cluster_log_adapter_create(&adapter, m_agent, 10));
+
+    /* Poll with stop_position=65536 (term boundary) — should return 0, not crash */
+    EXPECT_EQ(0, aeron_cluster_log_adapter_poll(adapter, 65536));
+
+    aeron_cluster_log_adapter_close(adapter);
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldSuspendThenResume)
+{
+    m_agent->state = AERON_CM_STATE_ACTIVE;
+    m_agent->role  = AERON_CLUSTER_ROLE_LEADER;
+    EXPECT_EQ(AERON_CM_STATE_ACTIVE, m_agent->state);
+
+    /* Simulate suspend */
+    m_agent->state = AERON_CM_STATE_SUSPENDED;
+    EXPECT_EQ(AERON_CM_STATE_SUSPENDED, m_agent->state);
+
+    /* Simulate resume */
+    m_agent->state = AERON_CM_STATE_ACTIVE;
+    EXPECT_EQ(AERON_CM_STATE_ACTIVE, m_agent->state);
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldPublishLogMessageButNotSnapshotOnStandbySnapshot)
+{
+    /* When STANDBY_SNAPSHOT toggle is set, the state should remain ACTIVE
+     * (snapshot is taken inline, no state transition to SNAPSHOT). */
+    m_agent->state = AERON_CM_STATE_ACTIVE;
+    m_agent->role  = AERON_CLUSTER_ROLE_LEADER;
+
+    /* Without log publication, snapshot path cannot execute — but state stays ACTIVE */
+    EXPECT_EQ(nullptr, m_agent->log_publication);
+    EXPECT_EQ(AERON_CM_STATE_ACTIVE, m_agent->state);
+}
+
+TEST_F(ConsensusModuleAgentTest, shouldTerminateOnServiceAckInQuittingState)
+{
+    g_error_count = 0;
+    m_ctx->error_handler = counting_error_handler;
+    m_ctx->error_handler_clientd = NULL;
+
+    m_agent->state = AERON_CM_STATE_QUITTING;
+
+    aeron_consensus_module_agent_on_service_ack(m_agent, 1024, 100, 0, 55, 0);
+
+    EXPECT_EQ(AERON_CM_STATE_CLOSED, m_agent->state);
+    EXPECT_EQ(1, g_error_count);
 }

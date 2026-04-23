@@ -19,6 +19,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -37,6 +39,9 @@ extern "C"
  * ----------------------------------------------------------------------- */
 #define AERON_CM_SNAPSHOT_TYPE_ID   INT64_C(1)  /* ConsensusModule snapshot */
 #define AERON_SVC_SNAPSHOT_TYPE_ID  INT64_C(2)  /* ClusteredService snapshot */
+
+/* ConsensusModule.Configuration.SERVICE_ID — the CM's own service ID for snapshots */
+#define AERON_CM_SERVICE_ID  (-1)
 
 /* -----------------------------------------------------------------------
  * Stream IDs (defaults)
@@ -65,6 +70,7 @@ extern "C"
 #define AERON_CM_MEMBER_ID_DEFAULT          0
 #define AERON_CM_APPOINTED_LEADER_DEFAULT   (-1)  /* -1 = no appointed leader */
 #define AERON_CM_SERVICE_COUNT_DEFAULT      1
+#define AERON_CM_MAX_SERVICE_COUNT         127
 
 /* -----------------------------------------------------------------------
  * Channel defaults
@@ -129,8 +135,8 @@ typedef enum aeron_cm_state_en
     AERON_CM_STATE_ACTIVE           = 1,
     AERON_CM_STATE_SUSPENDED        = 2,
     AERON_CM_STATE_SNAPSHOT         = 3,
-    AERON_CM_STATE_QUORUM_SNAPSHOT  = 4,
-    AERON_CM_STATE_LEAVING          = 5,
+    AERON_CM_STATE_QUITTING         = 4,
+    AERON_CM_STATE_TERMINATING      = 5,
     AERON_CM_STATE_CLOSED           = 6,
 }
 aeron_cm_state_t;
@@ -192,6 +198,122 @@ aeron_cm_state_t;
 #define AERON_CM_LEADER_HEARTBEAT_INTERVAL_ENV_VAR "AERON_CLUSTER_LEADER_HEARTBEAT_INTERVAL"
 #define AERON_CM_ELECTION_TIMEOUT_ENV_VAR         "AERON_CLUSTER_ELECTION_TIMEOUT"
 #define AERON_CM_APP_VERSION_ENV_VAR              "AERON_CLUSTER_APP_VERSION"
+
+/* -----------------------------------------------------------------------
+ * Authorisation service — mirrors Java AuthorisationService
+ *
+ * The service is a simple callback: given (protocol_id, action_id,
+ * encoded_principal, principal_length) it returns true to allow, false
+ * to deny.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Authorisation callback type.
+ * Mirrors Java AuthorisationService.isAuthorised(protocolId, actionId, type, encodedPrincipal).
+ * The `type` parameter from Java is omitted — in C the caller passes NULL for the
+ * opaque type pointer.
+ */
+typedef bool (*aeron_authorisation_service_func_t)(
+    int32_t protocol_id,
+    int32_t action_id,
+    const uint8_t *encoded_principal,
+    size_t principal_length);
+
+/** Authorisation service that allows every action. Mirrors Java AuthorisationService.ALLOW_ALL. */
+static inline bool aeron_authorisation_service_allow_all(
+    int32_t protocol_id,
+    int32_t action_id,
+    const uint8_t *encoded_principal,
+    size_t principal_length)
+{
+    (void)protocol_id;
+    (void)action_id;
+    (void)encoded_principal;
+    (void)principal_length;
+    return true;
+}
+
+/** Authorisation service that denies every action. Mirrors Java AuthorisationService.DENY_ALL. */
+static inline bool aeron_authorisation_service_deny_all(
+    int32_t protocol_id,
+    int32_t action_id,
+    const uint8_t *encoded_principal,
+    size_t principal_length)
+{
+    (void)protocol_id;
+    (void)action_id;
+    (void)encoded_principal;
+    (void)principal_length;
+    return false;
+}
+
+/**
+ * SBE schema and template IDs used for authorisation checks.
+ * Values taken from generated SBE codec headers.
+ */
+#define AERON_CLUSTER_SBE_SCHEMA_ID                      111
+#define AERON_CLUSTER_BACKUP_QUERY_TEMPLATE_ID            77
+#define AERON_CLUSTER_SESSION_CONNECT_REQUEST_TEMPLATE_ID  3
+#define AERON_CLUSTER_HEARTBEAT_REQUEST_TEMPLATE_ID       79
+#define AERON_CLUSTER_STANDBY_SNAPSHOT_TEMPLATE_ID        81
+
+/**
+ * Default authorisation service that allows Backup and Standby actions.
+ * Mirrors Java AllowBackupAndStandbyAuthorisationService.
+ *
+ * Allows BackupQuery (77), HeartbeatRequest (79), StandbySnapshot (81)
+ * when protocol_id == SCHEMA_ID (111).
+ */
+static inline bool aeron_authorisation_service_allow_backup_and_standby(
+    int32_t protocol_id,
+    int32_t action_id,
+    const uint8_t *encoded_principal,
+    size_t principal_length)
+{
+    (void)encoded_principal;
+    (void)principal_length;
+    return AERON_CLUSTER_SBE_SCHEMA_ID == protocol_id &&
+        (AERON_CLUSTER_BACKUP_QUERY_TEMPLATE_ID == action_id ||
+         AERON_CLUSTER_HEARTBEAT_REQUEST_TEMPLATE_ID == action_id ||
+         AERON_CLUSTER_STANDBY_SNAPSHOT_TEMPLATE_ID == action_id);
+}
+
+/** Supplier callback type — returns an authorisation service function. */
+typedef aeron_authorisation_service_func_t (*aeron_authorisation_service_supplier_func_t)(void);
+
+#define AERON_CM_AUTHORISATION_SERVICE_SUPPLIER_ENV_VAR \
+    "AERON_CLUSTER_AUTHORISATION_SERVICE_SUPPLIER"
+
+/**
+ * Resolve the authorisation service supplier from the environment variable
+ * AERON_CLUSTER_AUTHORISATION_SERVICE_SUPPLIER.
+ *
+ * Recognised tokens (mirrors Java ConsensusModule.Configuration.authorisationServiceSupplier()):
+ *   "DENY_ALL"  -> returns aeron_authorisation_service_deny_all
+ *   "ALLOW_ALL" -> returns aeron_authorisation_service_allow_all
+ *   (empty/unset) -> returns aeron_authorisation_service_allow_backup_and_standby (default)
+ */
+static inline aeron_authorisation_service_func_t aeron_cm_authorisation_service_supplier(void)
+{
+    const char *value = getenv(AERON_CM_AUTHORISATION_SERVICE_SUPPLIER_ENV_VAR);
+    if (NULL == value || '\0' == value[0])
+    {
+        return aeron_authorisation_service_allow_backup_and_standby;
+    }
+
+    if (0 == strcmp(value, "DENY_ALL"))
+    {
+        return aeron_authorisation_service_deny_all;
+    }
+
+    if (0 == strcmp(value, "ALLOW_ALL"))
+    {
+        return aeron_authorisation_service_allow_all;
+    }
+
+    /* Unknown value — fall back to default */
+    return aeron_authorisation_service_allow_backup_and_standby;
+}
 
 #ifdef __cplusplus
 }

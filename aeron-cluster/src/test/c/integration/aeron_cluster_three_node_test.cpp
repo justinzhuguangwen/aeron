@@ -50,8 +50,8 @@ static std::string make_test_dir(const char *prefix)
 class ThreeNodeClusterTest : public ::testing::Test
 {
 protected:
-    static constexpr int NODE_COUNT = 3;
-    static constexpr int BASE_NODE_INDEX = 21;
+    enum { NODE_COUNT= 3 };
+    enum { BASE_NODE_INDEX= 21 };
 
     void SetUp() override
     {
@@ -61,7 +61,7 @@ protected:
 
         for (int i = 0; i < NODE_COUNT; i++)
         {
-            m_nodes[i] = new TestClusterNode(BASE_NODE_INDEX + i, NODE_COUNT, m_base_dir, std::cout);
+            m_nodes[i] = new TestClusterNode(i, NODE_COUNT, BASE_NODE_INDEX, m_base_dir, std::cout);
             m_nodes[i]->start();
         }
     }
@@ -104,8 +104,8 @@ protected:
                  "%s", m_nodes[idx]->aeron_dir().c_str());
         ctx->member_id           = idx;
         ctx->appointed_leader_id = appointed_leader_id;
-        ctx->service_count       = 0;
-        ctx->app_version         = 1;
+        ctx->service_count      = 0;
+        ctx->app_version        = 1;
 
         if (ctx->cluster_members) { free(ctx->cluster_members); }
         ctx->cluster_members = strdup(m_nodes[idx]->cluster_members().c_str());
@@ -113,20 +113,20 @@ protected:
 
         if (ctx->consensus_channel) { free(ctx->consensus_channel); }
         ctx->consensus_channel   = strdup("aeron:udp");
-        ctx->consensus_stream_id = 108;
+        ctx->consensus_stream_id= 108;
         if (ctx->log_channel) { free(ctx->log_channel); }
         ctx->log_channel         = strdup("aeron:ipc");
-        ctx->log_stream_id       = 100;
+        ctx->log_stream_id      = 100;
         if (ctx->snapshot_channel) { free(ctx->snapshot_channel); }
         ctx->snapshot_channel    = strdup("aeron:ipc");
-        ctx->snapshot_stream_id  = 107;
+        ctx->snapshot_stream_id = 107;
         if (ctx->control_channel) { free(ctx->control_channel); }
         ctx->control_channel     = strdup("aeron:ipc");
-        ctx->consensus_module_stream_id = 105;
-        ctx->service_stream_id          = 104;
+        ctx->consensus_module_stream_id= 105;
+        ctx->service_stream_id         = 104;
         if (ctx->ingress_channel) { free(ctx->ingress_channel); }
         ctx->ingress_channel     = strdup("aeron:udp");
-        ctx->ingress_stream_id   = 101;
+        ctx->ingress_stream_id  = 101;
 
         /* Align with Java TestCluster timeout constants */
         ctx->startup_canvass_timeout_ns    = INT64_C(2000000000);
@@ -164,7 +164,7 @@ protected:
  * Needs TestCluster equivalent (aligned to Java aeron-system-tests) to work. */
 TEST_F(ThreeNodeClusterTest, shouldElectAppointedLeader)
 {
-    int appointed = 1;
+    int appointed= 1;
 
     for (int i = 0; i < NODE_COUNT; i++)
     {
@@ -213,7 +213,7 @@ TEST_F(ThreeNodeClusterTest, shouldElectAppointedLeader)
 /* DISABLED: Same C archive server IPC double-free bug. */
 TEST_F(ThreeNodeClusterTest, shouldTakeAndRestoreSnapshot)
 {
-    int appointed = 1;
+    int appointed= 1;
 
     for (int i = 0; i < NODE_COUNT; i++)
     {
@@ -254,7 +254,7 @@ TEST_F(ThreeNodeClusterTest, shouldTakeAndRestoreSnapshot)
 
     int entries_before = leader->recording_log->sorted_count;
 
-    int64_t snap_log_position = 0;
+    int64_t snap_log_position= 0;
     int64_t snap_timestamp = now_ns / INT64_C(1000000);
     int rc = aeron_cluster_recording_log_append_snapshot(
         leader->recording_log,

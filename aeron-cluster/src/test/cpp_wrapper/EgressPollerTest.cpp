@@ -811,7 +811,7 @@ constexpr int32_t AeronClusterFixture::LEADER_ID;
 
 TEST_F(AeronClusterFixture, initialStateIsConnected)
 {
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
     EXPECT_FALSE(aeron_cluster_is_closed(m_cluster));
 }
 
@@ -828,14 +828,14 @@ TEST_F(AeronClusterFixture, trackIngressResult_setsClosedOnPublicationClosed)
 {
     EXPECT_FALSE(aeron_cluster_is_closed(m_cluster));
     aeron_cluster_track_ingress_result(m_cluster, AERON_PUBLICATION_CLOSED);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CLOSED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CLOSED, aeron_cluster_state(m_cluster));
     EXPECT_TRUE(aeron_cluster_is_closed(m_cluster));
 }
 
 TEST_F(AeronClusterFixture, trackIngressResult_noChangeOnBackPressure)
 {
     aeron_cluster_track_ingress_result(m_cluster, AERON_PUBLICATION_BACK_PRESSURED);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
 }
 
 /* --- SESSION_EVENT CLOSED ---------------------------------------------- */
@@ -845,7 +845,7 @@ TEST_F(AeronClusterFixture, sessionEventClosed_transitionsToClosedState)
     size_t len = build_session_event(
         SESSION_ID, TERM_ID, LEADER_ID, aeron_cluster_client_eventCode_CLOSED);
     dispatch(len);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CLOSED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CLOSED, aeron_cluster_state(m_cluster));
     EXPECT_TRUE(aeron_cluster_is_closed(m_cluster));
 }
 
@@ -855,7 +855,7 @@ TEST_F(AeronClusterFixture, sessionEventOk_doesNotChangeState)
     size_t len = build_session_event(
         SESSION_ID, TERM_ID, LEADER_ID, aeron_cluster_client_eventCode_OK);
     dispatch(len);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
 }
 
 /* --- SESSION_EVENT REDIRECT -------------------------------------------- */
@@ -867,7 +867,7 @@ TEST_F(AeronClusterFixture, sessionEventRedirect_doesNotCloseSession)
     size_t len = build_session_event(
         SESSION_ID, TERM_ID, LEADER_ID, aeron_cluster_client_eventCode_REDIRECT, "");
     dispatch(len);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
     EXPECT_FALSE(aeron_cluster_is_closed(m_cluster));
 }
 
@@ -884,7 +884,7 @@ TEST_F(AeronClusterFixture, newLeaderEvent_updatesLeadershipTermAndMember)
     dispatch(len);
     EXPECT_EQ(new_term,   aeron_cluster_leadership_term_id(m_cluster));
     EXPECT_EQ(new_member, aeron_cluster_leader_member_id(m_cluster));
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CONNECTED, aeron_cluster_state(m_cluster));
 }
 
 TEST_F(AeronClusterFixture, newLeaderEvent_olderTerm_doesNotUpdateLeadership)
@@ -903,12 +903,12 @@ TEST_F(AeronClusterFixture, onEgressForTest_isNoopWhenAlreadyClosed)
 {
     /* Once CLOSED, dispatching further events must not crash or re-open */
     aeron_cluster_track_ingress_result(m_cluster, AERON_PUBLICATION_CLOSED);
-    ASSERT_EQ(AERON_CLUSTER_SESSION_CLOSED, aeron_cluster_state(m_cluster));
+    ASSERT_EQ(AERON_CLUSTER_CLIENT_SESSION_CLOSED, aeron_cluster_state(m_cluster));
 
     size_t len = build_new_leader_event(SESSION_ID, TERM_ID + 5, 3, "");
     /* Should not crash; session stays CLOSED */
     aeron_cluster_on_egress_for_test(m_cluster, m_buf, len);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CLOSED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CLOSED, aeron_cluster_state(m_cluster));
 }
 
 /* --- AWAIT_NEW_LEADER_CONNECTION async reconnect state machine ---------- */
@@ -924,7 +924,7 @@ TEST_F(AeronClusterFixture, newLeaderEvent_withEndpoints_closesWhenNoAeron)
     /* With aeron==NULL, async_add_publication fails and we transition to CLOSED */
     size_t len = build_new_leader_event(SESSION_ID, TERM_ID + 1, 2, "localhost:20001");
     dispatch(len);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CLOSED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CLOSED, aeron_cluster_state(m_cluster));
 }
 
 TEST_F(AeronClusterFixture, sessionEventRedirect_withEndpoints_closesWhenNoAeron)
@@ -934,24 +934,24 @@ TEST_F(AeronClusterFixture, sessionEventRedirect_withEndpoints_closesWhenNoAeron
         SESSION_ID, TERM_ID, LEADER_ID,
         aeron_cluster_client_eventCode_REDIRECT, "localhost:20001");
     dispatch(len);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CLOSED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CLOSED, aeron_cluster_state(m_cluster));
 }
 
 TEST_F(AeronClusterFixture, awaitNewLeaderConnectionTimesOutToClosed)
 {
     /* Manually set the state to AWAIT_NEW_LEADER_CONNECTION with a past deadline */
-    m_cluster->state = AERON_CLUSTER_SESSION_AWAIT_NEW_LEADER_CONNECTION;
+    m_cluster->state = AERON_CLUSTER_CLIENT_SESSION_AWAIT_NEW_LEADER_CONNECTION;
     m_cluster->async_reconnect_pub = nullptr;
     m_cluster->state_deadline_ns = 1; /* far in the past */
 
     /* poll_egress should detect the timeout and transition to CLOSED.
      * egress_poller->subscription is NULL, so poll returns 0 fragments. */
     aeron_cluster_poll_egress(m_cluster);
-    EXPECT_EQ(AERON_CLUSTER_SESSION_CLOSED, aeron_cluster_state(m_cluster));
+    EXPECT_EQ(AERON_CLUSTER_CLIENT_SESSION_CLOSED, aeron_cluster_state(m_cluster));
 }
 
 TEST_F(AeronClusterFixture, pollEgressReturnsZeroWhenClosed)
 {
-    m_cluster->state = AERON_CLUSTER_SESSION_CLOSED;
+    m_cluster->state = AERON_CLUSTER_CLIENT_SESSION_CLOSED;
     EXPECT_EQ(0, aeron_cluster_poll_egress(m_cluster));
 }

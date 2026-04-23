@@ -21,6 +21,8 @@
 
 #include "aeron_alloc.h"
 #include "util/aeron_error.h"
+#include "uri/aeron_uri.h"
+#include "uri/aeron_uri_string_builder.h"
 #include "aeron_archive_replication_session.h"
 
 /*
@@ -54,6 +56,7 @@ extern int aeron_archive_replay_params_init(aeron_archive_replay_params_t *param
 extern int aeron_archive_async_connect(aeron_archive_async_connect_t **async, aeron_archive_context_t *ctx);
 extern int aeron_archive_async_connect_poll(aeron_archive_t **aeron_archive, aeron_archive_async_connect_t *async);
 extern int aeron_archive_close(aeron_archive_t *aeron_archive);
+extern int aeron_archive_context_close(aeron_archive_context_t *ctx);
 extern int aeron_archive_poll_for_error_response(aeron_archive_t *aeron_archive, char *buffer, size_t buffer_length);
 extern uint64_t aeron_archive_context_get_message_timeout_ns(aeron_archive_context_t *ctx);
 
@@ -116,6 +119,13 @@ static void replication_session_signal(
     int64_t position,
     aeron_archive_recording_signal_code_t recording_signal)
 {
+    /* If the originating control session was torn down before us (e.g.
+     * during conductor close), skip the signal rather than dereference a
+     * freed pointer. Mirrors the null-out pattern applied to
+     * recording_session entries in aeron_archive_conductor_do_work when a
+     * control session transitions to done. */
+    if (NULL == session->control_session) { return; }
+
     int64_t subscription_id = AERON_NULL_VALUE;
     if (NULL != session->recording_subscription)
     {
@@ -331,10 +341,45 @@ static void on_src_recording_descriptor(
     }
     else if (session->is_destination_recording_empty)
     {
-        /* Replace the empty destination recording with source metadata */
+        /* Replace the empty destination recording with source metadata in
+         * place via catalog_replace_recording (falls back to invalidate +
+         * add if new variable-length fields don't fit). */
         session->replay_position = descriptor->start_position;
-        /* For replace, we invalidate and re-add with same recording id.
-         * This is a simplification; in production you would use catalog_replace_recording. */
+        if (aeron_archive_catalog_replace_recording(
+                session->catalog,
+                session->dst_recording_id,
+                descriptor->start_position,
+                descriptor->stop_position,
+                descriptor->start_timestamp,
+                descriptor->stop_timestamp,
+                descriptor->initial_term_id,
+                descriptor->segment_file_length,
+                descriptor->term_buffer_length,
+                descriptor->mtu_length,
+                descriptor->session_id,
+                descriptor->stream_id,
+                descriptor->stripped_channel,
+                descriptor->original_channel,
+                descriptor->source_identity) < 0)
+        {
+            aeron_archive_catalog_invalidate_recording(
+                session->catalog, session->dst_recording_id);
+            aeron_archive_catalog_add_recording(
+                session->catalog,
+                descriptor->start_position,
+                descriptor->stop_position,
+                descriptor->start_timestamp,
+                descriptor->stop_timestamp,
+                descriptor->initial_term_id,
+                descriptor->segment_file_length,
+                descriptor->term_buffer_length,
+                descriptor->mtu_length,
+                descriptor->session_id,
+                descriptor->stream_id,
+                descriptor->stripped_channel,
+                descriptor->original_channel,
+                descriptor->source_identity);
+        }
     }
 
     aeron_archive_replication_session_state_t next_state = AERON_ARCHIVE_REPLICATION_STATE_EXTEND;
@@ -451,34 +496,43 @@ static int replication_step_extend(
     aeron_archive_replication_session_t *session,
     int64_t now_ms)
 {
-    /*
-     * Build the subscription channel for the local extend-recording.
-     * The Java version manipulates ChannelUri; here we build a simplified channel string.
-     *
-     * Key properties:
-     * - rejoin=false
-     * - session-id=<replay_session_id> (unless response mode)
-     * - If tagged (MDS): remove endpoint, add tags and control-mode=manual
-     */
+    /* Build the subscription channel for the local extend-recording.
+     * Mirrors Java ReplicationSession which uses ChannelUri to parse +
+     * rewrite params. We use aeron_uri_string_builder for the same effect:
+     *   - rejoin=false
+     *   - session-id=<replay_session_id>
+     *   - MDS mode: drop endpoint, add tags + control-mode=manual */
     const bool is_mds = session->is_tagged || NULL != session->live_destination;
 
-    char channel[2048];
+    aeron_uri_string_builder_t builder;
+    const char *base = is_mds ? "aeron:udp" : session->replication_channel;
+    if (NULL == base) { base = "aeron:udp"; }
+    if (aeron_uri_string_builder_init_on_string(&builder, base) < 0)
+    {
+        return -1;
+    }
+
+    aeron_uri_string_builder_put(&builder, "rejoin", "false");
+    aeron_uri_string_builder_put_int32(&builder, AERON_URI_SESSION_ID_KEY, session->replay_session_id);
+
     if (is_mds)
     {
-        snprintf(channel, sizeof(channel),
-            "aeron:udp?rejoin=false|tags=%" PRId64 ",%" PRId64 "|control-mode=manual|session-id=%d",
-            session->channel_tag_id,
-            session->subscription_tag_id,
-            session->replay_session_id);
+        char tags[64];
+        snprintf(tags, sizeof(tags), "%" PRId64 ",%" PRId64,
+            session->channel_tag_id, session->subscription_tag_id);
+        aeron_uri_string_builder_put(&builder, AERON_URI_TAGS_KEY, tags);
+        aeron_uri_string_builder_put(&builder, "control-mode", "manual");
+        /* Drop endpoint for MDS. */
+        aeron_uri_string_builder_put(&builder, "endpoint", NULL);
     }
-    else
+
+    char channel[2048];
+    if (aeron_uri_string_builder_sprint(&builder, channel, sizeof(channel)) < 0)
     {
-        /* Use the replication channel with rejoin=false and session-id appended */
-        snprintf(channel, sizeof(channel),
-            "%s|rejoin=false|session-id=%d",
-            session->replication_channel,
-            session->replay_session_id);
+        aeron_uri_string_builder_close(&builder);
+        return -1;
     }
+    aeron_uri_string_builder_close(&builder);
 
     /*
      * Ask the conductor to extend the recording. In the Java code this returns
@@ -1035,6 +1089,17 @@ int aeron_archive_replication_session_close(aeron_archive_replication_session_t 
     {
         aeron_archive_close(session->src_archive);
         session->src_archive = NULL;
+    }
+
+    /* Close the source archive context we own. aeron_archive_async_connect
+     * DUPLICATES the context internally (see aeron_archive_async_connect.c
+     * aeron_archive_context_duplicate), so the original passed to us at
+     * session create remains the session's responsibility — closing
+     * src_archive only frees the duplicate. */
+    if (NULL != session->src_archive_ctx)
+    {
+        aeron_archive_context_close(session->src_archive_ctx);
+        session->src_archive_ctx = NULL;
     }
 
     /* Close response publication if created */

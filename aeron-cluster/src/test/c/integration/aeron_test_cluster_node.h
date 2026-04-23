@@ -29,17 +29,24 @@
  *
  * For 3-node tests, each node has its own TestClusterNode wrapping its
  * own TestClusteredMediaDriver instance.
+ *
+ * Identity: (member_id, member_count, port_base) matches Java's
+ * (memberId, memberCount, clusterId). All members in the same cluster
+ * share port_base so they compute identical cluster_members /
+ * ingress_endpoints views.
  */
 class TestClusterNode
 {
 public:
     TestClusterNode(
-        int node_index,
-        int node_count,
+        int member_id,
+        int member_count,
+        int port_base,
         const std::string &base_dir,
         std::ostream &stream)
-        : m_cmd(node_index, node_count, base_dir, stream),
-          m_node_index(node_index)
+        : m_cmd(member_id, member_count, port_base, base_dir, stream),
+          m_member_id(member_id),
+          m_port_base(port_base)
     {
     }
 
@@ -68,12 +75,14 @@ public:
     const std::string &cluster_dir() const { return m_cmd.cluster_dir(); }
     const std::string &cluster_members() const { return m_cmd.cluster_members(); }
     const std::string &ingress_endpoints() const { return m_cmd.ingress_endpoints(); }
-    int node_index() const { return m_node_index; }
-    int consensus_port() const { return 20220 + m_node_index; }
+    int member_id() const { return m_member_id; }
+    int node_index() const { return m_port_base + m_member_id; }
+    int consensus_port() const { return 20220 + m_port_base + m_member_id; }
 
 private:
     TestClusteredMediaDriver m_cmd;
-    int m_node_index;
+    int m_member_id;
+    int m_port_base;
 };
 
 #endif /* AERON_TEST_CLUSTER_NODE_H */

@@ -279,3 +279,62 @@ void aeron_cluster_mark_file_service_filename(char *buf, size_t buf_len, int ser
     snprintf(buf, buf_len, "%s%d%s",
         AERON_CLUSTER_MARK_FILE_SERVICE_PREFIX, service_id, AERON_CLUSTER_MARK_FILE_EXT);
 }
+
+void aeron_cluster_mark_file_set_authenticator(
+    aeron_cluster_mark_file_t *mark_file, const char *class_name)
+{
+    if (NULL == mark_file || NULL == mark_file->mapped || NULL == class_name)
+    {
+        return;
+    }
+    size_t len = strlen(class_name);
+    if (len >= AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_MAX_LEN)
+    {
+        len = AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_MAX_LEN - 1;
+    }
+    memcpy(mark_file->mapped + AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_OFFSET, class_name, len);
+    mark_file->mapped[AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_OFFSET + len] = '\0';
+    aeron_msync(mark_file->mapped + AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_OFFSET, len + 1);
+}
+
+const char *aeron_cluster_mark_file_get_authenticator(
+    aeron_cluster_mark_file_t *mark_file, char *buf, size_t buf_len)
+{
+    if (NULL == mark_file || NULL == mark_file->mapped || NULL == buf || 0 == buf_len)
+    {
+        return "";
+    }
+    const char *src = (const char *)(mark_file->mapped + AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_OFFSET);
+    size_t len = strnlen(src, AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_MAX_LEN);
+    if (len >= buf_len)
+    {
+        len = buf_len - 1;
+    }
+    memcpy(buf, src, len);
+    buf[len] = '\0';
+    return buf;
+}
+
+const char *aeron_cluster_mark_file_parent_directory(
+    aeron_cluster_mark_file_t *mark_file, char *buf, size_t buf_len)
+{
+    if (NULL == mark_file || NULL == buf || 0 == buf_len)
+    {
+        return "";
+    }
+    snprintf(buf, buf_len, "%s", mark_file->path);
+    /* Find last separator */
+    char *last_sep = strrchr(buf, '/');
+#if defined(_MSC_VER)
+    char *last_bsep = strrchr(buf, '\\');
+    if (NULL == last_sep || (NULL != last_bsep && last_bsep > last_sep))
+    {
+        last_sep = last_bsep;
+    }
+#endif
+    if (NULL != last_sep)
+    {
+        *last_sep = '\0';
+    }
+    return buf;
+}

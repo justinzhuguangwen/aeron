@@ -100,6 +100,19 @@ typedef struct aeron_archive_recording_session_entry_stct
 {
     int64_t recording_id;
     aeron_archive_recording_session_t *session;
+
+    /* control_session that started this recording, for routing STOP signal
+     * on close. Stored as void* to avoid circular include. */
+    void *control_session;
+    int64_t correlation_id;
+    int64_t subscription_id;
+    int32_t source_image_session_id;  /* to unlink from subscription entry on close */
+
+    /* Pending position counter. The counter is allocated async on
+     * recording_session start; once resolved, it's attached to the session's
+     * ->position field. While pending, the session falls back to the
+     * recording_writer's position for in-process queries. */
+    aeron_async_add_counter_t *position_counter_async;
 }
 aeron_archive_recording_session_entry_t;
 
@@ -132,6 +145,28 @@ typedef struct aeron_archive_recording_subscription_entry_stct
     aeron_subscription_t *subscription;
     aeron_async_add_subscription_t *async;
     int64_t ref_count;
+
+    /* Client-side state captured at start_recording time so that the START
+     * signal (and subsequent lifecycle signals) can be routed back to the
+     * right control session. Stored as void* to avoid circular include with
+     * aeron_archive_control_session.h. */
+    void *control_session;
+    int64_t correlation_id;
+    int32_t stream_id;
+    char *original_channel;
+    bool auto_stop;
+
+    /* If non-negative, this subscription is extending an existing recording
+     * instead of creating a new one (extend_recording path). The next image
+     * arriving on the subscription is attached to this recording_id. */
+    int64_t extend_target_recording_id;
+
+    /* session_ids of images we have already spun up a recording_session
+     * for. On each conductor tick we iterate subscription->images() and
+     * create recording_sessions for images not yet tracked here. */
+    int32_t *recorded_image_session_ids;
+    int32_t recorded_image_count;
+    int32_t recorded_image_capacity;
 }
 aeron_archive_recording_subscription_entry_t;
 
@@ -148,6 +183,11 @@ typedef struct aeron_archive_conductor_task_stct
 }
 aeron_archive_conductor_task_t;
 
+/* Forward-declare to avoid including aeron_archive_mark_file.h which would
+ * create a circular include via aeron_archive_server.h. */
+struct aeron_archive_mark_file_stct;
+typedef struct aeron_archive_mark_file_stct aeron_archive_mark_file_t;
+
 /**
  * Context configuration for the archive conductor.
  */
@@ -156,6 +196,7 @@ typedef struct aeron_archive_conductor_context_stct
     aeron_t *aeron;
     aeron_archive_catalog_t *catalog;
     aeron_archive_recording_events_proxy_t *recording_events_proxy;
+    aeron_archive_mark_file_t *mark_file;
 
     const char *archive_dir;
     const char *control_channel;
@@ -680,6 +721,80 @@ int aeron_archive_conductor_purge_recording(
     aeron_archive_conductor_t *conductor,
     int64_t correlation_id,
     int64_t recording_id,
+    void *control_session);
+
+/**
+ * Detach segments from a recording. Mirrors Java detachSegments:
+ * updates start_position to new_start_position (must be segment-aligned and
+ * within the recorded range).
+ */
+int aeron_archive_conductor_detach_segments(
+    aeron_archive_conductor_t *conductor,
+    int64_t correlation_id,
+    int64_t recording_id,
+    int64_t new_start_position,
+    void *control_session);
+
+/**
+ * Delete any segment files whose base position is below the recording's
+ * current start_position (i.e. previously detached). Mirrors Java
+ * deleteDetachedSegments.
+ */
+int aeron_archive_conductor_delete_detached_segments(
+    aeron_archive_conductor_t *conductor,
+    int64_t correlation_id,
+    int64_t recording_id,
+    void *control_session);
+
+/**
+ * Atomic detach + delete: advance start_position and delete segment files
+ * before the new start. Mirrors Java purgeSegments.
+ */
+int aeron_archive_conductor_purge_segments(
+    aeron_archive_conductor_t *conductor,
+    int64_t correlation_id,
+    int64_t recording_id,
+    int64_t new_start_position,
+    void *control_session);
+
+/**
+ * Re-attach segments whose files exist on disk but lie before the current
+ * start_position. Mirrors Java attachSegments (simplified: trusts file
+ * lengths rather than validating per-frame headers).
+ */
+int aeron_archive_conductor_attach_segments(
+    aeron_archive_conductor_t *conductor,
+    int64_t correlation_id,
+    int64_t recording_id,
+    void *control_session);
+
+/**
+ * Move contiguous segments from src recording to dst recording. Mirrors
+ * Java migrateSegments.
+ */
+int aeron_archive_conductor_migrate_segments(
+    aeron_archive_conductor_t *conductor,
+    int64_t correlation_id,
+    int64_t src_recording_id,
+    int64_t dst_recording_id,
+    void *control_session);
+
+/**
+ * Update the channel metadata for a recording (stripped + original).
+ * Mirrors Java updateChannel.
+ */
+int aeron_archive_conductor_update_channel(
+    aeron_archive_conductor_t *conductor,
+    int64_t correlation_id,
+    int64_t recording_id,
+    const char *channel,
+    void *control_session);
+
+/**
+ * Generate a replay token for a client. Simple monotonic counter.
+ */
+int64_t aeron_archive_conductor_generate_replay_token(
+    aeron_archive_conductor_t *conductor,
     void *control_session);
 
 /**

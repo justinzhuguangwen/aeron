@@ -288,6 +288,48 @@ int aeron_archive_catalog_update_recording_position(
     int64_t timestamp_ms);
 
 /**
+ * Update the start position for a recording (used by detach/purge/attach
+ * segments).
+ * Mirrors Java Catalog.startPosition(recordingId, newStartPosition).
+ */
+int aeron_archive_catalog_update_start_position(
+    aeron_archive_catalog_t *catalog,
+    int64_t recording_id,
+    int64_t new_start_position);
+
+/**
+ * Update the stop position for a recording (used by migrate segments).
+ * Mirrors Java Catalog.stopPosition.
+ */
+int aeron_archive_catalog_update_stop_position(
+    aeron_archive_catalog_t *catalog,
+    int64_t recording_id,
+    int64_t new_stop_position);
+
+/**
+ * Replace a recording's descriptor in-place where the new variable-length
+ * fields (channels / source_identity) fit in the existing frame. If they
+ * don't fit, returns -1 and leaves the catalog unchanged — callers should
+ * fall back to invalidate + add_recording (recording_id will change).
+ */
+int aeron_archive_catalog_replace_recording(
+    aeron_archive_catalog_t *catalog,
+    int64_t recording_id,
+    int64_t start_position,
+    int64_t stop_position,
+    int64_t start_timestamp,
+    int64_t stop_timestamp,
+    int32_t initial_term_id,
+    int32_t segment_file_length,
+    int32_t term_buffer_length,
+    int32_t mtu_length,
+    int32_t session_id,
+    int32_t stream_id,
+    const char *stripped_channel,
+    const char *original_channel,
+    const char *source_identity);
+
+/**
  * Mark a recording as invalid and remove it from the index.
  *
  * @param catalog      the catalog.

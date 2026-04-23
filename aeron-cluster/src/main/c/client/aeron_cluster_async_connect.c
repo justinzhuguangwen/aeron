@@ -15,6 +15,9 @@
  */
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
 #include <errno.h>
 
 #include "aeron_cluster.h"
@@ -27,7 +30,9 @@
 #include "aeron_cluster_credentials_supplier.h"
 
 #include "aeron_alloc.h"
+#include "uri/aeron_uri.h"
 #include "util/aeron_error.h"
+#include "util/aeron_strutil.h"
 
 /* -----------------------------------------------------------------------
  * State machine states — defined in the .c to keep the struct opaque.
@@ -463,8 +468,14 @@ int aeron_cluster_async_connect_poll(
             }
             else if (poller->event_code == AERON_CLUSTER_EVENT_CODE_REDIRECT)
             {
-                /* Multi-member: detail contains the new ingress endpoints.
-                 * Update context and restart from SEND_CONNECT_REQUEST. */
+                /* Mirrors Java AeronCluster.updateMembers (invoked from the
+                 * AWAIT_CONNECT_RESPONSE REDIRECT branch). Java closes the
+                 * existing ingressPublication, re-parses the endpoints, and
+                 * opens a new publication against the leader's endpoint.
+                 * Without rebuilding the publication, a client that opened
+                 * against a non-leader member would keep sending connect
+                 * requests to that follower and get REDIRECTed again, looping
+                 * until timeout. */
                 if (NULL != poller->detail && poller->detail_length > 0)
                 {
                     if (aeron_cluster_context_set_ingress_endpoints(
@@ -473,8 +484,113 @@ int aeron_cluster_async_connect_poll(
                         AERON_APPEND_ERR("%s", "");
                         goto cleanup;
                     }
+
+                    /* Locate `<leader_member_id>=<endpoint>` in the CSV
+                     * "id=ep,id=ep,..." and build a new ingress channel URI. */
+                    char leader_endpoint[128] = {0};
+                    bool found = false;
+                    {
+                        char scan[AERON_URI_MAX_LENGTH];
+                        const size_t copy_len = poller->detail_length < (sizeof(scan) - 1)
+                            ? (size_t)poller->detail_length : (sizeof(scan) - 1);
+                        memcpy(scan, poller->detail, copy_len);
+                        scan[copy_len] = '\0';
+
+                        char *tokens[64];
+                        const int n_tokens = aeron_tokenise(scan, ',', 64, tokens);
+                        for (int ti = 0; ti < n_tokens; ti++)
+                        {
+                            char *tok = tokens[ti];
+                            char *eq = strchr(tok, '=');
+                            if (NULL == eq) { continue; }
+                            *eq = '\0';
+                            const int id = atoi(tok);
+                            if (id == async->leader_member_id)
+                            {
+                                const char *ep = eq + 1;
+                                const size_t ep_len = strlen(ep);
+                                const size_t cap = sizeof(leader_endpoint) - 1;
+                                const size_t n = ep_len < cap ? ep_len : cap;
+                                memcpy(leader_endpoint, ep, n);
+                                leader_endpoint[n] = '\0';
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!found)
+                    {
+                        AERON_SET_ERR(EINVAL,
+                            "REDIRECT: no endpoint for leader_member_id=%d in: %.*s",
+                            async->leader_member_id,
+                            (int)poller->detail_length, poller->detail);
+                        goto cleanup;
+                    }
+
+                    char new_ingress_channel[AERON_URI_MAX_LENGTH];
+                    snprintf(new_ingress_channel, sizeof(new_ingress_channel),
+                        "aeron:udp?endpoint=%s", leader_endpoint);
+
+                    if (aeron_cluster_context_set_ingress_channel(
+                        async->ctx, new_ingress_channel) < 0)
+                    {
+                        AERON_APPEND_ERR("%s", "");
+                        goto cleanup;
+                    }
+
+                    /* Tear down current publication + ingress_proxy; a fresh
+                     * pair is built by ADD_PUBLICATION state below. */
+                    if (NULL != async->ingress_proxy)
+                    {
+                        aeron_free(async->ingress_proxy);
+                        async->ingress_proxy = NULL;
+                    }
+                    if (NULL != async->publication)
+                    {
+                        aeron_publication_close(async->publication, NULL, NULL);
+                        async->publication = NULL;
+                    }
+                    if (NULL != async->exclusive_publication)
+                    {
+                        aeron_exclusive_publication_close(async->exclusive_publication, NULL, NULL);
+                        async->exclusive_publication = NULL;
+                    }
+
+                    /* Re-submit async_add_publication for the leader. */
+                    if (async->ctx->is_ingress_exclusive)
+                    {
+                        if (aeron_async_add_exclusive_publication(
+                            &async->async_add_exclusive_publication,
+                            async->aeron,
+                            async->ctx->ingress_channel,
+                            async->ctx->ingress_stream_id) < 0)
+                        {
+                            AERON_APPEND_ERR("%s", "");
+                            goto cleanup;
+                        }
+                    }
+                    else
+                    {
+                        if (aeron_async_add_publication(
+                            &async->async_add_publication,
+                            async->aeron,
+                            async->ctx->ingress_channel,
+                            async->ctx->ingress_stream_id) < 0)
+                        {
+                            AERON_APPEND_ERR("%s", "");
+                            goto cleanup;
+                        }
+                    }
+
+                    async->state = ADD_PUBLICATION;
                 }
-                async->state = SEND_CONNECT_REQUEST;
+                else
+                {
+                    /* No new endpoints supplied (shouldn't happen in a real
+                     * cluster) — fall back to re-sending over existing pub. */
+                    async->state = SEND_CONNECT_REQUEST;
+                }
             }
             else if (poller->event_code == AERON_CLUSTER_EVENT_CODE_AUTHENTICATION_REJECTED)
             {

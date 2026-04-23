@@ -953,6 +953,7 @@ static int process_one_pending_list(
                 rejected_list[(*rejected_count)++] = s;
             }
             else { aeron_cluster_cluster_session_close_and_free(s); }
+            work++;
         }
     }
 
@@ -1111,14 +1112,29 @@ static int send_pending_list(
             continue;
         }
 
-        /* Start publication if not yet */
-        if (NULL == s->response_publication)
+        /* Start async registration if not yet in-flight. The handle is
+         * persisted on the session across ticks (mirrors process_pending_sessions
+         * above and Java's ClientConductor-backed registration pattern): a
+         * fresh aeron_async_add_exclusive_publication call each tick would
+         * orphan the previous one (leak) and never give the driver enough
+         * time between submit and poll to return REGISTERED. */
+        if (NULL == s->response_publication && NULL == s->async_response_pub)
         {
-            aeron_async_add_exclusive_publication_t *async = NULL;
             aeron_async_add_exclusive_publication(
-                &async, manager->aeron,
+                &s->async_response_pub, manager->aeron,
                 s->response_channel, s->response_stream_id);
-            if (async) { aeron_async_add_exclusive_publication_poll(&s->response_publication, async); }
+        }
+
+        if (NULL == s->response_publication && NULL != s->async_response_pub)
+        {
+            int rc = aeron_async_add_exclusive_publication_poll(
+                &s->response_publication, s->async_response_pub);
+            if (rc != 0)
+            {
+                /* >0 (REGISTERED) or <0 (ERRORED/TIMED_OUT): poll already
+                 * freed the async handle internally. Clear our reference. */
+                s->async_response_pub = NULL;
+            }
         }
 
         if (NULL != s->response_publication &&

@@ -81,6 +81,7 @@ int aeron_cm_context_init(aeron_cm_context_t **ctx)
 
     c->member_id          = AERON_CM_MEMBER_ID_DEFAULT;
     c->appointed_leader_id = AERON_CM_APPOINTED_LEADER_DEFAULT;
+    c->cluster_id         = 0;
     c->service_count      = AERON_CM_SERVICE_COUNT_DEFAULT;
     c->app_version        = 0;
 
@@ -95,9 +96,11 @@ int aeron_cm_context_init(aeron_cm_context_t **ctx)
     c->service_stream_id   = AERON_CM_SERVICE_STREAM_ID_DEFAULT;
     c->snapshot_channel    = NULL;
     c->snapshot_stream_id  = AERON_CM_SNAPSHOT_STREAM_ID_DEFAULT;
+    c->replication_channel = NULL;
 
     c->cluster_members = NULL;
     c->cluster_dir[0]  = '\0';
+    c->cluster_services_directory_name[0] = '\0';
 
     c->session_timeout_ns            = AERON_CM_SESSION_TIMEOUT_NS_DEFAULT;
     c->leader_heartbeat_timeout_ns   = AERON_CM_LEADER_HEARTBEAT_TIMEOUT_NS_DEFAULT;
@@ -145,6 +148,7 @@ int aeron_cm_context_init(aeron_cm_context_t **ctx)
 
     /* Extension hooks — all NULL by default */
     memset(&c->extension, 0, sizeof(c->extension));
+    c->extension.supported_schema_id = -1;
 
     /* Apply env vars */
     char *v;
@@ -207,6 +211,7 @@ error:
     aeron_free(c->consensus_channel);
     aeron_free(c->control_channel);
     aeron_free(c->snapshot_channel);
+    aeron_free(c->replication_channel);
     aeron_free(c->cluster_members);
     aeron_free(c);
     return -1;
@@ -237,11 +242,24 @@ int aeron_cm_context_close(aeron_cm_context_t *ctx)
         aeron_free(ctx->consensus_channel);
         aeron_free(ctx->control_channel);
         aeron_free(ctx->snapshot_channel);
+        aeron_free(ctx->replication_channel);
         aeron_free(ctx->cluster_members);
         if (ctx->owns_idle_strategy) { aeron_free(ctx->idle_strategy_state); }
         aeron_free(ctx);
     }
     return 0;
+}
+
+/**
+ * Helper: returns true if log_channel contains the given URI parameter name.
+ */
+static bool log_channel_contains_param(const char *log_channel, const char *param_name)
+{
+    if (NULL == log_channel)
+    {
+        return false;
+    }
+    return NULL != strstr(log_channel, param_name);
 }
 
 int aeron_cm_context_conclude(aeron_cm_context_t *ctx)
@@ -250,7 +268,7 @@ int aeron_cm_context_conclude(aeron_cm_context_t *ctx)
     if ('\0' == ctx->agent_role_name[0])
     {
         snprintf(ctx->agent_role_name, sizeof(ctx->agent_role_name),
-            "consensus-module-%d-%d", 0 /* clusterId placeholder */, ctx->member_id);
+            "consensus-module-%d-%d", ctx->cluster_id, ctx->member_id);
     }
 
 #define CHK_CTR(fld, exp, name) \
@@ -269,6 +287,39 @@ int aeron_cm_context_conclude(aeron_cm_context_t *ctx)
     CHK_CTR(timed_out_client_counter,    AERON_CM_COUNTER_CLIENT_TIMEOUT_TYPE_ID,         "timedOutClientCounter")
 #undef CHK_CTR
 
+    /* Validate log channel does not contain term-id, initial-term-id, or term-offset */
+    if (log_channel_contains_param(ctx->log_channel, "term-id="))
+    {
+        AERON_SET_ERR(EINVAL, "log channel must not contain term-id: %s", ctx->log_channel);
+        return -1;
+    }
+    if (log_channel_contains_param(ctx->log_channel, "initial-term-id="))
+    {
+        AERON_SET_ERR(EINVAL, "log channel must not contain initial-term-id: %s", ctx->log_channel);
+        return -1;
+    }
+    if (log_channel_contains_param(ctx->log_channel, "term-offset="))
+    {
+        AERON_SET_ERR(EINVAL, "log channel must not contain term-offset: %s", ctx->log_channel);
+        return -1;
+    }
+
+    /* Validate service count range [0, 127] */
+    if (ctx->service_count < 0 || ctx->service_count > AERON_CM_MAX_SERVICE_COUNT)
+    {
+        AERON_SET_ERR(EINVAL, "service count out of range [0, %d]: %d",
+            AERON_CM_MAX_SERVICE_COUNT, ctx->service_count);
+        return -1;
+    }
+
+    /* Reject service count 0 without ConsensusModuleExtension */
+    if (0 == ctx->service_count && NULL == ctx->extension.on_start)
+    {
+        AERON_SET_ERR(EINVAL, "%s",
+            "zero services are only supported when ConsensusModuleExtension is enabled");
+        return -1;
+    }
+
     if (NULL == ctx->cluster_members || '\0' == *ctx->cluster_members)
     {
         AERON_SET_ERR(EINVAL, "%s", "cluster_members is required");
@@ -284,6 +335,33 @@ int aeron_cm_context_conclude(aeron_cm_context_t *ctx)
             (long long)ctx->startup_canvass_timeout_ns,
             (long long)ctx->leader_heartbeat_timeout_ns);
         return -1;
+    }
+
+    /* Resolve cluster_dir to canonical path if set */
+    if ('\0' != ctx->cluster_dir[0])
+    {
+        char resolved[AERON_MAX_PATH];
+        if (NULL != realpath(ctx->cluster_dir, resolved))
+        {
+            snprintf(ctx->cluster_dir, sizeof(ctx->cluster_dir), "%s", resolved);
+        }
+    }
+
+    /* Set cluster_services_directory_name default from cluster_dir if empty */
+    if ('\0' == ctx->cluster_services_directory_name[0] && '\0' != ctx->cluster_dir[0])
+    {
+        snprintf(ctx->cluster_services_directory_name,
+            sizeof(ctx->cluster_services_directory_name), "%s", ctx->cluster_dir);
+    }
+    else if ('\0' != ctx->cluster_services_directory_name[0])
+    {
+        /* Resolve cluster_services_directory_name if set */
+        char resolved[AERON_MAX_PATH];
+        if (NULL != realpath(ctx->cluster_services_directory_name, resolved))
+        {
+            snprintf(ctx->cluster_services_directory_name,
+                sizeof(ctx->cluster_services_directory_name), "%s", resolved);
+        }
     }
 
     /* Create/check ClusterMarkFile if cluster_dir is set and mark_file not already provided */
@@ -325,19 +403,34 @@ int aeron_cm_context_conclude(aeron_cm_context_t *ctx)
         /* Signal ready immediately */
         aeron_cluster_mark_file_signal_ready(ctx->mark_file, now_ms);
 
-        /* Create symlink in cluster_dir if markFileDir differs */
-        if (ctx->mark_file_dir[0] != '\0' &&
-            strcmp(ctx->mark_file_dir, ctx->cluster_dir) != 0)
+        /* Write authenticator supplier class name into the mark file if set */
+        if ('\0' != ctx->authenticator_supplier_class_name[0] && NULL != ctx->mark_file)
+        {
+            aeron_cluster_mark_file_set_authenticator(
+                ctx->mark_file, ctx->authenticator_supplier_class_name);
+        }
+
+        /* Remove or create symlink in cluster_dir based on mark file location */
         {
             char link_path[AERON_MAX_PATH];
             int lp_len = snprintf(link_path, sizeof(link_path), "%s/%s",
                 ctx->cluster_dir, AERON_CLUSTER_MARK_FILE_LINK_FILENAME);
             if (lp_len >= 0 && (size_t)lp_len < sizeof(link_path))
             {
-                unlink(link_path);
-                if (symlink(ctx->mark_file_dir, link_path) < 0)
+                if (ctx->mark_file_dir[0] != '\0' &&
+                    strcmp(ctx->mark_file_dir, ctx->cluster_dir) != 0)
                 {
-                    /* non-fatal: symlink is convenience only */
+                    /* markFileDir differs from clusterDir: create symlink */
+                    unlink(link_path);
+                    if (symlink(ctx->mark_file_dir, link_path) < 0)
+                    {
+                        /* non-fatal: symlink is convenience only */
+                    }
+                }
+                else
+                {
+                    /* markFileDir same as clusterDir or not set: remove stale link */
+                    unlink(link_path);
                 }
             }
         }

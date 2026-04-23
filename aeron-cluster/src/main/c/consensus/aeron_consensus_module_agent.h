@@ -87,7 +87,7 @@ struct aeron_consensus_module_agent_stct
     int64_t  snapshot_timestamp;     /* timestamp when snapshot was triggered (ns) */
     int      service_ack_count;      /* count of services that have acked at expected_ack_position */
 
-    /* Termination state — used while state == AERON_CM_STATE_LEAVING */
+    /* Termination state — used while state == AERON_CM_STATE_TERMINATING */
     int64_t  termination_leadership_term_id; /* term id when termination was requested (-1 = none) */
     int64_t  termination_deadline_ns;        /* deadline for forced termination (ns) */
     bool     has_cluster_termination;        /* true when a ClusterTermination is in progress */
@@ -170,6 +170,13 @@ struct aeron_consensus_module_agent_stct
     /* Tracks whether the current leadership term started during node startup.
      * Set by on_election_complete; forwarded to service JoinLog messages. */
     bool                                     is_leader_startup;
+
+    /* Set by the archive recording-signal consumer when the log recording
+     * stops unexpectedly (STOP signal for the current log_recording_id while
+     * no election is running and state == ACTIVE). Consumed on the next
+     * do_work tick to trigger enterElection(). Mirrors Java
+     * ConsensusModuleAgent's onRecordingSignal path. */
+    bool                                     log_recording_stopped_unexpectedly;
 };
 
 /* -----------------------------------------------------------------------

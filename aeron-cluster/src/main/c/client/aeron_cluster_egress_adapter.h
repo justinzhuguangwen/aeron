@@ -106,6 +106,16 @@ int aeron_cluster_egress_adapter_poll(aeron_cluster_egress_adapter_t *adapter);
 /** Close (does NOT close subscription). */
 void aeron_cluster_egress_adapter_close(aeron_cluster_egress_adapter_t *adapter);
 
+/**
+ * Test helper: dispatch a pre-built SBE buffer directly into the adapter's
+ * fragment handler, bypassing the subscription.  NOT for production use.
+ */
+void aeron_cluster_egress_adapter_on_fragment_for_test(
+    aeron_cluster_egress_adapter_t *adapter,
+    const uint8_t *buffer,
+    size_t length,
+    aeron_header_t *header);
+
 #ifdef __cplusplus
 }
 #endif

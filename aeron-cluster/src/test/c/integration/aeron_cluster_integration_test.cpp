@@ -80,7 +80,7 @@ protected:
         m_base_dir = make_test_dir("aeron_cluster_integ_");
         aeron_delete_directory(m_base_dir.c_str());
 
-        m_cmd = new TestClusteredMediaDriver(0, 1, m_base_dir, std::cout);
+        m_cmd = new TestClusteredMediaDriver(0, 1, 0, m_base_dir, std::cout);
         ASSERT_EQ(0, m_cmd->launch()) << "ClusteredMediaDriver launch failed";
     }
 

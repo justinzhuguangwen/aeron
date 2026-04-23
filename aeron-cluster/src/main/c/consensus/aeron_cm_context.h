@@ -69,6 +69,7 @@ typedef struct aeron_cm_context_stct
 
     int32_t   member_id;
     int32_t   appointed_leader_id;
+    int32_t   cluster_id;
     int       service_count;
     int32_t   app_version;
 
@@ -84,10 +85,12 @@ typedef struct aeron_cm_context_stct
     int32_t   service_stream_id;           /* CM → service */
     char     *snapshot_channel;
     int32_t   snapshot_stream_id;
+    char     *replication_channel;
 
     /* Cluster topology */
     char     *cluster_members;    /* "id,ep:ep:ep:ep:ep|..." */
     char      cluster_dir[AERON_MAX_PATH];
+    char      cluster_services_directory_name[AERON_MAX_PATH];
 
     /* Timeouts */
     int64_t   session_timeout_ns;
@@ -172,6 +175,19 @@ typedef struct aeron_cm_context_stct
         void (*on_session_closed)(void *clientd, int64_t cluster_session_id, int32_t close_reason);
         void (*on_prepare_for_new_leadership)(void *clientd);
         void (*on_take_snapshot)(void *clientd, aeron_exclusive_publication_t *snapshot_pub);
+
+        /** Schema ID supported by this extension. -1 = no extension. */
+        int32_t supported_schema_id;
+
+        /**
+         * Handle ingress messages with schema matching supported_schema_id.
+         * Mirrors Java ConsensusModuleExtension.onIngressExtensionMessage().
+         */
+        int (*on_ingress_extension_message)(void *clientd,
+            int32_t acting_block_length, int32_t template_id,
+            int32_t schema_id, int32_t acting_version,
+            const uint8_t *buffer, size_t offset, size_t length);
+
         void  *clientd;
     }
     extension;

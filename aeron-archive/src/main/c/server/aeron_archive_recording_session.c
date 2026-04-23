@@ -99,13 +99,16 @@ static int recording_session_record(aeron_archive_recording_session_t *session)
     if (work_count > 0)
     {
         const int64_t writer_position = aeron_archive_recording_writer_position(session->recording_writer);
-        int64_t *counter_addr = aeron_counter_addr(session->position);
-        if (NULL != counter_addr)
+        if (NULL != session->position)
         {
-            /*
-             * Use ordered/release store semantics matching Java's setRelease.
-             */
-            AERON_SET_RELEASE(*(volatile int64_t *)counter_addr, writer_position);
+            int64_t *counter_addr = aeron_counter_addr(session->position);
+            if (NULL != counter_addr)
+            {
+                /*
+                 * Use ordered/release store semantics matching Java's setRelease.
+                 */
+                AERON_SET_RELEASE(*(volatile int64_t *)counter_addr, writer_position);
+            }
         }
     }
     else if (aeron_image_is_end_of_stream(session->image) || aeron_image_is_closed(session->image))
@@ -251,15 +254,19 @@ int aeron_archive_recording_session_do_work(aeron_archive_recording_session_t *s
     {
         session->state = AERON_ARCHIVE_RECORDING_SESSION_STATE_STOPPED;
         aeron_archive_recording_writer_close(session->recording_writer);
+        session->recording_writer = NULL;
         work_count++;
 
         if (NULL != session->recording_events_proxy)
         {
-            int64_t *counter_addr = aeron_counter_addr(session->position);
             int64_t stop_position = AERON_NULL_VALUE;
-            if (NULL != counter_addr)
+            if (NULL != session->position)
             {
-                AERON_GET_ACQUIRE(stop_position, *(volatile int64_t *)counter_addr);
+                int64_t *counter_addr = aeron_counter_addr(session->position);
+                if (NULL != counter_addr)
+                {
+                    AERON_GET_ACQUIRE(stop_position, *(volatile int64_t *)counter_addr);
+                }
             }
 
             aeron_archive_recording_events_proxy_stopped(
@@ -281,6 +288,7 @@ int aeron_archive_recording_session_close(aeron_archive_recording_session_t *ses
     }
 
     aeron_archive_recording_writer_close(session->recording_writer);
+    session->recording_writer = NULL;
 
     if (NULL != session->position)
     {
@@ -300,6 +308,7 @@ void aeron_archive_recording_session_abort_close(aeron_archive_recording_session
     if (NULL != session)
     {
         aeron_archive_recording_writer_close(session->recording_writer);
+        session->recording_writer = NULL;
     }
 }
 
@@ -336,22 +345,25 @@ bool aeron_archive_recording_session_is_auto_stop(const aeron_archive_recording_
 
 int64_t aeron_archive_recording_session_recorded_position(const aeron_archive_recording_session_t *session)
 {
+    /* Prefer the position counter (zero-copy cross-process) when allocated;
+     * otherwise fall back to querying the recording_writer directly, which
+     * is always accurate but only readable in-process. */
     aeron_counter_t *counter = session->position;
-
-    if (NULL == counter || aeron_counter_is_closed(counter))
+    if (NULL != counter && !aeron_counter_is_closed(counter))
     {
-        return AERON_NULL_VALUE;
+        int64_t *counter_addr = aeron_counter_addr(counter);
+        if (NULL != counter_addr)
+        {
+            int64_t value;
+            AERON_GET_ACQUIRE(value, *(volatile int64_t *)counter_addr);
+            return value;
+        }
     }
-
-    int64_t *counter_addr = aeron_counter_addr(counter);
-    if (NULL == counter_addr)
+    if (NULL != session->recording_writer)
     {
-        return AERON_NULL_VALUE;
+        return aeron_archive_recording_writer_position(session->recording_writer);
     }
-
-    int64_t value;
-    AERON_GET_ACQUIRE(value, *(volatile int64_t *)counter_addr);
-    return value;
+    return AERON_NULL_VALUE;
 }
 
 const char *aeron_archive_recording_session_error_message(const aeron_archive_recording_session_t *session)

@@ -28,14 +28,14 @@ extern "C"
 {
 #endif
 
-typedef enum aeron_cluster_session_state_enum
+typedef enum aeron_cluster_client_session_state_enum
 {
-    AERON_CLUSTER_SESSION_CONNECTED                  = 0,
-    AERON_CLUSTER_SESSION_AWAIT_NEW_LEADER           = 1,
-    AERON_CLUSTER_SESSION_CLOSED                     = 2,
-    AERON_CLUSTER_SESSION_AWAIT_NEW_LEADER_CONNECTION = 3,
+    AERON_CLUSTER_CLIENT_SESSION_CONNECTED                  = 0,
+    AERON_CLUSTER_CLIENT_SESSION_AWAIT_NEW_LEADER           = 1,
+    AERON_CLUSTER_CLIENT_SESSION_CLOSED                     = 2,
+    AERON_CLUSTER_CLIENT_SESSION_AWAIT_NEW_LEADER_CONNECTION = 3,
 }
-aeron_cluster_session_state_t;
+aeron_cluster_client_session_state_t;
 
 struct aeron_cluster_stct
 {
@@ -50,7 +50,7 @@ struct aeron_cluster_stct
     int64_t  leadership_term_id;
     int32_t  leader_member_id;
 
-    aeron_cluster_session_state_t    state;
+    aeron_cluster_client_session_state_t    state;
     bool                             is_in_callback;
 
     /* Async leader reconnect state — mirrors Java AWAIT_NEW_LEADER_CONNECTION */
@@ -157,7 +157,7 @@ int64_t aeron_cluster_send_admin_request(
 /**
  * Return the current session state.
  */
-aeron_cluster_session_state_t aeron_cluster_state(aeron_cluster_t *cluster);
+aeron_cluster_client_session_state_t aeron_cluster_state(aeron_cluster_t *cluster);
 
 /**
  * Poll egress subscription for messages and events.

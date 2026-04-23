@@ -46,6 +46,7 @@ set(SOURCE
     aeron_cluster_pending_message_tracker.c
     aeron_cluster_consensus_module_adapter.c
     aeron_expandable_ring_buffer.c
+    aeron_cluster_publication_group.c
 )
 
 set(HEADERS
@@ -74,6 +75,7 @@ set(HEADERS
     aeron_cluster_consensus_module_adapter.h
     aeron_cluster_pending_message_tracker.h
     aeron_expandable_ring_buffer.h
+    aeron_cluster_publication_group.h
 )
 
 if (MSVC AND "${CMAKE_SYSTEM_NAME}" MATCHES "Windows")

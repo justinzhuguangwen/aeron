@@ -327,16 +327,15 @@ static void aeron_archive_control_session_adapter_on_fragment(
             memcpy(response_channel_buf, response_channel_raw, copy_len);
             response_channel_buf[copy_len] = '\0';
 
-            /* Get the image from the header context */
+            /* Get the image from the header context — Java passes this into
+             * control_session for diagnostics (subscriber position, join
+             * position). aeron_header_context returns an Image* during poll
+             * dispatch; safe to use here since we're inside the fragment
+             * handler. */
             aeron_image_t *image = NULL;
             if (NULL != header)
             {
-                aeron_header_values_t header_values;
-                if (aeron_header_values(header, &header_values) == 0)
-                {
-                    /* Image context not directly available from header in C API;
-                     * pass NULL for now - used only for diagnostics. */
-                }
+                image = (aeron_image_t *)aeron_header_context(header);
             }
 
             aeron_archive_control_session_t *session = aeron_archive_conductor_new_control_session(
@@ -1497,12 +1496,9 @@ static void aeron_archive_control_session_adapter_on_fragment(
 
             if (NULL != session)
             {
-                /*
-                 * In the full implementation:
-                 *   long replayToken = conductor->generateReplayToken(session, recordingId);
-                 *   aeron_archive_control_session_send_ok_response(session, correlationId, replayToken);
-                 */
-                aeron_archive_control_session_send_ok_response(session, correlation_id, 0);
+                const int64_t replay_token = aeron_archive_conductor_generate_replay_token(
+                    adapter->conductor, session);
+                aeron_archive_control_session_send_ok_response(session, correlation_id, replay_token);
             }
             break;
         }
@@ -1517,17 +1513,26 @@ static void aeron_archive_control_session_adapter_on_fragment(
 
             const int64_t control_session_id = sbe_decode_int64(body, 0);
             const int64_t correlation_id = sbe_decode_int64(body, 8);
-            /* const int64_t recording_id = sbe_decode_int64(body, 16); */
+            const int64_t recording_id = sbe_decode_int64(body, 16);
 
             aeron_archive_control_session_t *session =
                 get_control_session(adapter, correlation_id, control_session_id, template_id);
 
             if (NULL != session)
             {
-                /*
-                 * In the full implementation:
-                 *   conductor->updateChannel(correlationId, recordingId, channel, session);
-                 */
+                size_t var_offset = block_length;
+                const uint32_t channel_len = sbe_decode_var_data_length(body, var_offset);
+                const char *channel = sbe_decode_var_data_ptr(body, var_offset);
+                char channel_buf[4096];
+                size_t copy_len = channel_len < sizeof(channel_buf) - 1 ? channel_len : sizeof(channel_buf) - 1;
+                memcpy(channel_buf, channel, copy_len);
+                channel_buf[copy_len] = '\0';
+
+                if (aeron_archive_conductor_update_channel(
+                        adapter->conductor, correlation_id, recording_id, channel_buf, session) < 0)
+                {
+                    aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+                }
             }
             break;
         }

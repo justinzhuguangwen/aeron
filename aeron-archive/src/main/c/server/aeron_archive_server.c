@@ -398,6 +398,7 @@ int aeron_archive_server_context_conclude(aeron_archive_server_context_t *ctx)
     cctx->aeron = ctx->aeron;
     cctx->catalog = catalog;
     cctx->recording_events_proxy = NULL;
+    cctx->mark_file = ctx->mark_file;
 
     cctx->archive_dir = ctx->archive_dir;
     cctx->control_channel = ctx->control_channel;

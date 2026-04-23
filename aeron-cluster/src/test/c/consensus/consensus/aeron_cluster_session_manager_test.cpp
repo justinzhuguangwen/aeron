@@ -515,3 +515,114 @@ TEST_F(SessionManagerStandbySnapshotTest, emptyEnqueueIsNoop)
         m_manager, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, 0);
     EXPECT_EQ(0, m_manager->pending_standby_count);
 }
+
+/* -----------------------------------------------------------------------
+ * Ported from Java SessionManagerTest:
+ *   shouldProcessPendingStandbySnapshotNotificationsAfterReachingCommitPosition
+ *
+ * Two multi-entry batches are enqueued (logPosition=100 and logPosition=50).
+ * Verifies ordering: the batch with the lower logPosition is released first
+ * once its commit position is reached, and a second call at 100 releases
+ * the other batch. A final call produces no additional work.
+ * ----------------------------------------------------------------------- */
+TEST_F(SessionManagerStandbySnapshotTest,
+       shouldProcessPendingStandbySnapshotNotificationsAfterReachingCommitPosition)
+{
+    /* Batch 1: two entries at logPosition=100 (service_id -1 and 0) */
+    {
+        int64_t rec_ids[]       = { 0LL, 1LL };
+        int64_t term_ids[]      = { 0LL, 0LL };
+        int64_t term_base_pos[] = { 0LL, 0LL };
+        int64_t log_pos[]       = { 100LL, 100LL };
+        int64_t timestamps[]    = { 0LL, 0LL };
+        int32_t svc_ids[]       = { -1, 0 };
+        aeron_cluster_session_manager_enqueue_standby_snapshot(
+            m_manager, rec_ids, term_ids, term_base_pos,
+            log_pos, timestamps, svc_ids, 2);
+    }
+
+    /* Batch 2: two entries at logPosition=50 (service_id -1 and 0) */
+    {
+        int64_t rec_ids[]       = { 2LL, 3LL };
+        int64_t term_ids[]      = { 0LL, 0LL };
+        int64_t term_base_pos[] = { 0LL, 0LL };
+        int64_t log_pos[]       = { 50LL, 50LL };
+        int64_t timestamps[]    = { 0LL, 0LL };
+        int32_t svc_ids[]       = { -1, 0 };
+        aeron_cluster_session_manager_enqueue_standby_snapshot(
+            m_manager, rec_ids, term_ids, term_base_pos,
+            log_pos, timestamps, svc_ids, 2);
+    }
+
+    ASSERT_EQ(2, m_manager->pending_standby_count);
+
+    /* commitPosition=49 — neither batch released */
+    int work = aeron_cluster_session_manager_process_pending_standby_snapshot_notifications(
+        m_manager, 49LL, 0LL);
+    EXPECT_EQ(0, work);
+    EXPECT_EQ(0, standby_snapshot_count());
+
+    /* commitPosition=50 — batch 2 (logPos=50) released, batch 1 still pending */
+    work = aeron_cluster_session_manager_process_pending_standby_snapshot_notifications(
+        m_manager, 50LL, 0LL);
+    EXPECT_EQ(1, work);
+    EXPECT_EQ(1, m_manager->pending_standby_count);
+    EXPECT_EQ(2, standby_snapshot_count());  /* 2 entries from batch 2 */
+
+    /* commitPosition=100 — batch 1 (logPos=100) released */
+    work = aeron_cluster_session_manager_process_pending_standby_snapshot_notifications(
+        m_manager, 100LL, 0LL);
+    EXPECT_EQ(1, work);
+    EXPECT_EQ(0, m_manager->pending_standby_count);
+    EXPECT_EQ(4, standby_snapshot_count());  /* 2 + 2 entries total */
+
+    /* One more call at commitPosition=100 — no further work */
+    work = aeron_cluster_session_manager_process_pending_standby_snapshot_notifications(
+        m_manager, 100LL, 0LL);
+    EXPECT_EQ(0, work);
+    EXPECT_EQ(4, standby_snapshot_count());
+}
+
+/* -----------------------------------------------------------------------
+ * Ported from Java SessionManagerTest:
+ *   shouldProcessPendingStandbySnapshotNotificationsAfterProcessingDelay
+ *
+ * A multi-entry batch is enqueued while the session manager has a
+ * non-zero processing delay. The batch is held even after its commit
+ * position is reached, until the clock advances past the delay.
+ * ----------------------------------------------------------------------- */
+TEST_F(SessionManagerStandbySnapshotTest,
+       shouldProcessPendingStandbySnapshotNotificationsAfterProcessingDelay)
+{
+    const int64_t processing_delay = 100LL;
+    m_manager->standby_snapshot_notification_delay_ns = processing_delay;
+
+    /* Batch: two entries at logPosition=100 (service_id -1 and 0) */
+    {
+        int64_t rec_ids[]       = { 0LL, 1LL };
+        int64_t term_ids[]      = { 0LL, 0LL };
+        int64_t term_base_pos[] = { 0LL, 0LL };
+        int64_t log_pos[]       = { 100LL, 100LL };
+        int64_t timestamps[]    = { 0LL, 0LL };
+        int32_t svc_ids[]       = { -1, 0 };
+        aeron_cluster_session_manager_enqueue_standby_snapshot(
+            m_manager, rec_ids, term_ids, term_base_pos,
+            log_pos, timestamps, svc_ids, 2);
+    }
+
+    ASSERT_EQ(1, m_manager->pending_standby_count);
+
+    /* commitPosition=100, nowNs=0 — committed but delay not yet elapsed */
+    int work = aeron_cluster_session_manager_process_pending_standby_snapshot_notifications(
+        m_manager, 100LL, 0LL);
+    EXPECT_EQ(0, work);
+    EXPECT_EQ(1, m_manager->pending_standby_count);
+    EXPECT_EQ(0, standby_snapshot_count());
+
+    /* Advance clock past the delay (nowNs = processing_delay = 100) */
+    work = aeron_cluster_session_manager_process_pending_standby_snapshot_notifications(
+        m_manager, 100LL, processing_delay);
+    EXPECT_EQ(1, work);
+    EXPECT_EQ(0, m_manager->pending_standby_count);
+    EXPECT_EQ(2, standby_snapshot_count());  /* 2 entries from the batch */
+}

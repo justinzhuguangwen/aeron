@@ -59,9 +59,14 @@ static aeron_controlled_fragment_handler_action_t on_message(
     const uint16_t act_version = aeron_cluster_client_messageHeader_version(&hdr);
     const uint16_t act_blen   = aeron_cluster_client_messageHeader_blockLength(&hdr);
 
-    /* If schema doesn't match, treat as extension message (no-op for now) */
+    /* If schema doesn't match, dispatch to extension hook. Mirrors Java
+     * LogAdapter.onFragment → consensusModuleAgent.onReplayExtensionMessage;
+     * without the hook it errors via the context's error_handler. */
     if (schema_id != aeron_cluster_client_messageHeader_sbe_schema_id())
     {
+        aeron_consensus_module_agent_on_extension_message(
+            adapter->agent, act_blen, template_id, schema_id, act_version,
+            buffer, 0, length);
         return AERON_ACTION_CONTINUE;
     }
 

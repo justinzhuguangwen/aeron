@@ -626,19 +626,23 @@ int aeron_cluster_recording_log_commit_log_position(
 
 int aeron_cluster_recording_log_invalidate_latest_snapshot(aeron_cluster_recording_log_t *log)
 {
-    /* Find the log_position of the latest valid snapshot group */
+    /*
+     * Find the log_position of the latest valid snapshot group.
+     * Mirrors Java isValidAnySnapshot(): considers both SNAPSHOT and STANDBY_SNAPSHOT.
+     * Scans the sorted view (reverse) looking for a CM entry (service_id == -1).
+     */
     int64_t latest_log_position = -1;
-    for (int i = log->entry_count - 1; i >= 0; i--)
+    (void)latest_log_position;  /* used below in invalidation loop */
+    for (int i = log->sorted_count - 1; i >= 0; i--)
     {
-        uint8_t *slot = log->mapped + (size_t)i * ENTRY_STRIDE;
-        int32_t entry_type; int64_t log_pos;
-        memcpy(&entry_type, slot + AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_OFFSET, 4);
-        memcpy(&log_pos,    slot + AERON_CLUSTER_RECORDING_LOG_LOG_POSITION_OFFSET, 8);
-
-        if (is_valid_entry(entry_type) &&
-            entry_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT)
+        const aeron_cluster_recording_log_entry_t *e = &log->sorted_entries[i];
+        int32_t base_type = e->entry_type & ~AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
+        if (e->is_valid &&
+            (base_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT ||
+             base_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_STANDBY_SNAPSHOT) &&
+            e->service_id == -1)
         {
-            latest_log_position = log_pos;
+            latest_log_position = e->log_position;
             break;
         }
     }
@@ -666,7 +670,7 @@ int aeron_cluster_recording_log_invalidate_latest_snapshot(aeron_cluster_recordi
         return -1;
     }
 
-    /* Invalidate ALL valid snapshots at that log_position */
+    /* Invalidate ALL valid snapshot/standby entries at that log_position */
     int count = 0;
     for (int i = 0; i < log->entry_count; i++)
     {
@@ -674,9 +678,11 @@ int aeron_cluster_recording_log_invalidate_latest_snapshot(aeron_cluster_recordi
         int32_t entry_type; int64_t log_pos;
         memcpy(&entry_type, slot + AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_OFFSET, 4);
         memcpy(&log_pos,    slot + AERON_CLUSTER_RECORDING_LOG_LOG_POSITION_OFFSET, 8);
+        int32_t base_type = entry_type & ~AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
 
         if (is_valid_entry(entry_type) &&
-            entry_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT &&
+            (base_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT ||
+             base_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_STANDBY_SNAPSHOT) &&
             log_pos == latest_log_position)
         {
             int32_t invalid = entry_type | AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
@@ -690,10 +696,9 @@ int aeron_cluster_recording_log_invalidate_latest_snapshot(aeron_cluster_recordi
     return (count > 0) ? 1 : 0;
 }
 
-int aeron_cluster_recording_log_invalidate_entry_at(
-    aeron_cluster_recording_log_t *log, int index)
+/* Internal: invalidate the physical slot at the given index, persist, and re-sort. */
+static int invalidate_physical_slot(aeron_cluster_recording_log_t *log, int index)
 {
-    if (index < 0 || index >= log->entry_count) { return -1; }
     uint8_t *slot = log->mapped + (size_t)index * ENTRY_STRIDE;
     int32_t entry_type;
     memcpy(&entry_type, slot + AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_OFFSET, 4);
@@ -701,7 +706,6 @@ int aeron_cluster_recording_log_invalidate_entry_at(
     memcpy(slot + AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_OFFSET, &invalid, 4);
     msync(slot + AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_OFFSET, 4, MS_SYNC);
 
-    /* Track as an invalid snapshot slot for potential reuse */
     int32_t base_type = entry_type & ~AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
     if (base_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT ||
         base_type == AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_STANDBY_SNAPSHOT)
@@ -709,7 +713,24 @@ int aeron_cluster_recording_log_invalidate_entry_at(
         recording_log_track_invalid_snapshot(log, index);
     }
 
-    return recording_log_sort(log);  /* rebuild sorted view */
+    return recording_log_sort(log);
+}
+
+/**
+ * Invalidate entry by sorted-view index.
+ * Mirrors Java RecordingLog.invalidateEntry(int index) which operates on the
+ * sorted entriesCache, not the physical file order.
+ */
+int aeron_cluster_recording_log_invalidate_entry(
+    aeron_cluster_recording_log_t *log, int sorted_index)
+{
+    if (sorted_index < 0 || sorted_index >= log->sorted_count)
+    {
+        AERON_SET_ERR(EINVAL, "sorted_index %d out of range [0,%d)", sorted_index, log->sorted_count);
+        return -1;
+    }
+    int physical_index = log->sorted_entries[sorted_index].entry_index;
+    return invalidate_physical_slot(log, physical_index);
 }
 
 /* -----------------------------------------------------------------------
@@ -911,6 +932,17 @@ int aeron_cluster_recording_log_append_standby_snapshot(
         return -1;
     }
 
+    if (NULL != archive_endpoint)
+    {
+        size_t ep_len = strlen(archive_endpoint);
+        if (ep_len > AERON_CLUSTER_RECORDING_LOG_MAX_ENDPOINT_LENGTH - 1)
+        {
+            AERON_SET_ERR(EINVAL, "Endpoint is too long: %d vs %d",
+                (int)ep_len, AERON_CLUSTER_RECORDING_LOG_MAX_ENDPOINT_LENGTH - 1);
+            return -1;
+        }
+    }
+
     /* Try to reuse an invalidated standby snapshot slot first. */
     if (restore_invalid_snapshot(log,
         AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_STANDBY_SNAPSHOT,
@@ -941,7 +973,26 @@ int aeron_cluster_recording_log_remove_entry(
     int64_t leadership_term_id,
     int index)
 {
-    return aeron_cluster_recording_log_invalidate_entry_at(log, index);
+    /* Java: finds entry by leadershipTermId + entryIndex (physical slot number),
+     * then invalidates it by writing NULL_VALUE to entry_type and reloading. */
+    if (index < 0 || index >= log->entry_count)
+    {
+        AERON_SET_ERR(EINVAL, "unknown entry index: %d", index);
+        return -1;
+    }
+
+    /* Verify leadership_term_id matches (mirrors Java validation) */
+    uint8_t *slot = log->mapped + (size_t)index * ENTRY_STRIDE;
+    int64_t stored_term;
+    memcpy(&stored_term, slot + AERON_CLUSTER_RECORDING_LOG_LEADERSHIP_TERM_ID_OFFSET, 8);
+    if (stored_term != leadership_term_id)
+    {
+        AERON_SET_ERR(EINVAL, "entry at index %d has leadershipTermId=%lld, expected %lld",
+            index, (long long)stored_term, (long long)leadership_term_id);
+        return -1;
+    }
+
+    return invalidate_physical_slot(log, index);
 }
 
 int aeron_cluster_recording_log_commit_log_position_by_term(
@@ -952,6 +1003,53 @@ int aeron_cluster_recording_log_commit_log_position_by_term(
     return aeron_cluster_recording_log_commit_log_position(log, leadership_term_id, log_position);
 }
 
+/**
+ * Check whether the sorted view contains a complete snapshot set (CM + all services)
+ * at the position of the CM entry at sorted index cm_index.
+ * If complete, fills out_snapshots[0..service_count] and sets *out_count = service_count+1.
+ */
+static bool validate_snapshot_set(
+    const aeron_cluster_recording_log_t *log,
+    int service_count,
+    int cm_index,
+    aeron_cluster_recording_log_entry_t *out_snapshots,
+    int *out_count)
+{
+    const int required = service_count + 1;  /* CM + service 0 .. service_count-1 */
+    if (cm_index - service_count < 0)
+    {
+        return false;
+    }
+    const aeron_cluster_recording_log_entry_t *cm = &log->sorted_entries[cm_index];
+
+    /* In the Java sorted view, a complete snapshot set is contiguous:
+     *   [cm_index - service_count] = service (service_count-1)
+     *   ...
+     *   [cm_index - 1]             = service 0
+     *   [cm_index]                 = CM (service_id == -1)
+     * All must be valid snapshots at the same logPosition. */
+    int32_t expected_service_id = -1;
+    int filled = 0;
+    for (int k = cm_index; k >= cm_index - service_count; k--)
+    {
+        const aeron_cluster_recording_log_entry_t *e = &log->sorted_entries[k];
+        int32_t btype = e->entry_type & ~AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
+        if (!e->is_valid || btype != AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT)
+        {
+            return false;
+        }
+        if (e->service_id != expected_service_id || e->log_position != cm->log_position)
+        {
+            return false;
+        }
+        out_snapshots[filled++] = *e;
+        expected_service_id++;
+    }
+
+    *out_count = filled;
+    return filled == required;
+}
+
 int aeron_cluster_recording_log_find_snapshots_at_or_before(
     aeron_cluster_recording_log_t *log,
     int64_t log_position,
@@ -959,56 +1057,51 @@ int aeron_cluster_recording_log_find_snapshots_at_or_before(
     aeron_cluster_recording_log_entry_t *out_snapshots,
     int *out_count)
 {
-    /* service IDs: -1 (CM), 0 .. service_count-1 */
-    const int slots = service_count + 1;
     *out_count = 0;
 
-    if (NULL == log->sorted_entries || slots <= 0)
+    if (NULL == log->sorted_entries || log->sorted_count == 0)
     {
         return 0;
     }
 
-    for (int svc_idx = 0; svc_idx < slots; svc_idx++)
+    /*
+     * Pass 1: scan sorted entries in reverse looking for the latest complete
+     * snapshot set at or before log_position.
+     */
+    for (int i = log->sorted_count - 1; i >= 0; i--)
     {
-        int32_t svc_id = (int32_t)(svc_idx - 1);   /* -1, 0, 1, ... */
-
-        /* Best "at or before" — highest log_position <= target */
-        aeron_cluster_recording_log_entry_t *at_or_before = NULL;
-        /* Fallback "lowest" — lowest log_position regardless */
-        aeron_cluster_recording_log_entry_t *lowest = NULL;
-
-        for (int i = 0; i < log->sorted_count; i++)
+        const aeron_cluster_recording_log_entry_t *e = &log->sorted_entries[i];
+        int32_t btype = e->entry_type & ~AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
+        if (!e->is_valid || btype != AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT ||
+            e->service_id != -1)
         {
-            aeron_cluster_recording_log_entry_t *e = &log->sorted_entries[i];
-            int32_t base_type = e->entry_type & ~AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
-
-            if (!is_valid_entry(e->entry_type) ||
-                base_type != AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT ||
-                e->service_id != svc_id)
-            {
-                continue;
-            }
-
-            /* Track lowest (fallback) */
-            if (NULL == lowest || e->log_position < lowest->log_position)
-            {
-                lowest = e;
-            }
-
-            /* Track latest at or before log_position */
-            if (e->log_position <= log_position)
-            {
-                if (NULL == at_or_before || e->log_position > at_or_before->log_position)
-                {
-                    at_or_before = e;
-                }
-            }
+            continue;
         }
-
-        aeron_cluster_recording_log_entry_t *chosen = (at_or_before != NULL) ? at_or_before : lowest;
-        if (NULL != chosen)
+        if (e->log_position > log_position)
         {
-            out_snapshots[(*out_count)++] = *chosen;
+            continue;
+        }
+        if (validate_snapshot_set(log, service_count, i, out_snapshots, out_count))
+        {
+            return 0;
+        }
+    }
+
+    /*
+     * Pass 2: fallback to lowest complete set regardless of position.
+     */
+    for (int i = 0; i < log->sorted_count; i++)
+    {
+        const aeron_cluster_recording_log_entry_t *e = &log->sorted_entries[i];
+        int32_t btype = e->entry_type & ~AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_INVALID_FLAG;
+        if (!e->is_valid || btype != AERON_CLUSTER_RECORDING_LOG_ENTRY_TYPE_SNAPSHOT ||
+            e->service_id != -1)
+        {
+            continue;
+        }
+        if (validate_snapshot_set(log, service_count, i, out_snapshots, out_count))
+        {
+            return 0;
         }
     }
 

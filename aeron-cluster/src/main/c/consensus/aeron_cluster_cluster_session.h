@@ -27,6 +27,8 @@ extern "C"
 {
 #endif
 
+#ifndef AERON_CLUSTER_SESSION_STATE_DEFINED
+#define AERON_CLUSTER_SESSION_STATE_DEFINED
 typedef enum aeron_cluster_session_state_en
 {
     AERON_CLUSTER_SESSION_STATE_INIT        = 0,
@@ -41,6 +43,7 @@ typedef enum aeron_cluster_session_state_en
     AERON_CLUSTER_SESSION_STATE_INVALID     = 9,
 }
 aeron_cluster_session_state_t;
+#endif /* AERON_CLUSTER_SESSION_STATE_DEFINED */
 
 typedef enum aeron_cluster_session_action_en
 {

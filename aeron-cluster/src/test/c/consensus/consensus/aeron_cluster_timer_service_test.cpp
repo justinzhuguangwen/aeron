@@ -346,3 +346,344 @@ TEST_F(TimerServiceTest, snapshotEmptyServiceDoesNothing)
     aeron_cluster_timer_service_snapshot(m_svc, capture_snapshot, &cap);
     EXPECT_EQ(0u, cap.timers.size());
 }
+
+/* -----------------------------------------------------------------------
+ * Java-aligned tests (ported from PriorityHeapTimerServiceTest.java)
+ * ----------------------------------------------------------------------- */
+
+static void ordered_expiry(void *clientd, int64_t correlation_id)
+{
+    static_cast<std::vector<int64_t>*>(clientd)->push_back(correlation_id);
+}
+
+/* throwsNullPointerExceptionIfTimerHandlerIsNull
+ * C equivalent: create with NULL handler should return -1. */
+TEST(TimerServiceStandaloneTest, createWithNullHandlerReturnsError)
+{
+    aeron_cluster_timer_service_t *svc = nullptr;
+    EXPECT_EQ(-1, aeron_cluster_timer_service_create(&svc, nullptr, nullptr));
+}
+
+/* cancelTimerByCorrelationIdIsANoOpIfNoTimersRegistered */
+TEST_F(TimerServiceTest, cancelIsANoOpIfNoTimersRegistered)
+{
+    EXPECT_FALSE(aeron_cluster_timer_service_cancel(m_svc, 100));
+}
+
+/* cancelTimerByCorrelationIdReturnsFalseForUnknownCorrelationId */
+TEST_F(TimerServiceTest, cancelReturnsFalseForUnknownIdWhenTimersExist)
+{
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(m_svc, 1, 100));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(m_svc, 7, 50));
+
+    EXPECT_FALSE(aeron_cluster_timer_service_cancel(m_svc, 3));
+}
+
+/* cancelTimerByCorrelationIdReturnsTrueAfterCancellingTheTimer */
+TEST_F(TimerServiceTest, cancelReturnsTrueAndVerifiesOrderOfRemaining)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 100));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 7, 50));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 90));
+
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 7));
+
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 111));
+    ASSERT_EQ(2u, fired.size());
+    EXPECT_EQ(2, fired[0]);
+    EXPECT_EQ(1, fired[1]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* cancelTimerByCorrelationIdReturnsTrueAfterCancellingTheLastTimer */
+TEST_F(TimerServiceTest, cancelLastTimerAndVerifyRemainingOrder)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 100));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 7, 50));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 90));
+
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 1));
+
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 111));
+    ASSERT_EQ(2u, fired.size());
+    EXPECT_EQ(7, fired[0]);
+    EXPECT_EQ(2, fired[1]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* cancelTimerByCorrelationIdAfterPoll */
+TEST_F(TimerServiceTest, cancelTimerByCorrelationIdAfterPoll)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 15));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 20));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 40));
+
+    EXPECT_EQ(1, aeron_cluster_timer_service_poll(svc, 19));
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 1));
+
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 40));
+    ASSERT_EQ(3u, fired.size());
+    EXPECT_EQ(5, fired[0]);
+    EXPECT_EQ(2, fired[1]);
+    EXPECT_EQ(4, fired[2]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* scheduleTimerForAnExistingCorrelationIdIsANoOpIfDeadlineDoesNotChange */
+TEST_F(TimerServiceTest, scheduleExistingIdNoOpIfDeadlineUnchangedVerifyOrder)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 50));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 7, 70));
+
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 50)); /* same deadline */
+
+    EXPECT_EQ(3, aeron_cluster_timer_service_poll(svc, 70));
+    ASSERT_EQ(3u, fired.size());
+    EXPECT_EQ(3, fired[0]);
+    EXPECT_EQ(5, fired[1]);
+    EXPECT_EQ(7, fired[2]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* scheduleTimerForAnExistingCorrelationIdShouldShiftEntryUpWhenDeadlineIsDecreasing */
+TEST_F(TimerServiceTest, scheduleExistingIdShiftUpVerifyOrder)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 10));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 10));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 50));
+
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 10)); /* shift up */
+
+    EXPECT_EQ(3, aeron_cluster_timer_service_poll(svc, 10));
+    ASSERT_EQ(3u, fired.size());
+    /* All three have deadline 10; 1 and 2 were first, 5 moved up */
+    EXPECT_EQ(1, fired[0]);
+    EXPECT_EQ(2, fired[1]);
+    EXPECT_EQ(5, fired[2]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* scheduleTimerForAnExistingCorrelationIdShouldShiftEntryDownWhenDeadlineIsIncreasing */
+TEST_F(TimerServiceTest, scheduleExistingIdShiftDownVerifyOrder)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 10));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 10));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 50));
+
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 30)); /* shift down */
+
+    EXPECT_EQ(4, aeron_cluster_timer_service_poll(svc, 30));
+    ASSERT_EQ(4u, fired.size());
+    EXPECT_EQ(2, fired[0]);
+    /* Remaining three (1,3,4) all have deadline 30; order among same-deadline is heap-dependent */
+    /* Verify timer 2 fires first (only one at deadline 10) and all 4 fired */
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* pollShouldRemovedExpiredTimers (Java: 5 timers, two polls) */
+TEST_F(TimerServiceTest, pollShouldRemoveExpiredTimersTwoPollPasses)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 100));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 200));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 300));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 400));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 500));
+
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 200));
+    EXPECT_EQ(3, aeron_cluster_timer_service_poll(svc, 500));
+
+    ASSERT_EQ(5u, fired.size());
+    EXPECT_EQ(1, fired[0]);
+    EXPECT_EQ(2, fired[1]);
+    EXPECT_EQ(3, fired[2]);
+    EXPECT_EQ(4, fired[3]);
+    EXPECT_EQ(5, fired[4]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* expireThanCancelTimer */
+TEST_F(TimerServiceTest, expireThenCancelTimerVerifyOrder)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 100));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 2));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 4));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 50));
+
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 5));
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 1));
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 1000));
+
+    ASSERT_EQ(4u, fired.size());
+    EXPECT_EQ(2, fired[0]);
+    EXPECT_EQ(4, fired[1]);
+    EXPECT_EQ(3, fired[2]);
+    EXPECT_EQ(5, fired[3]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* moveUpAnExistingTimerAndCancelAnotherOne */
+TEST_F(TimerServiceTest, moveUpExistingTimerAndCancelAnotherVerifyOrder)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 1));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 1));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 3));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 4));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 5));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 1)); /* move up */
+
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 3));
+
+    EXPECT_EQ(4, aeron_cluster_timer_service_poll(svc, 5));
+    ASSERT_EQ(4u, fired.size());
+    EXPECT_EQ(1, fired[0]);
+    EXPECT_EQ(2, fired[1]);
+    EXPECT_EQ(5, fired[2]);
+    EXPECT_EQ(4, fired[3]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* moveDownAnExistingTimerAndCancelAnotherOne */
+TEST_F(TimerServiceTest, moveDownExistingTimerAndCancelAnotherVerifyOrder)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 1));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 1));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 3));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 4));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 5));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 5)); /* move down */
+
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 3));
+
+    EXPECT_EQ(4, aeron_cluster_timer_service_poll(svc, 5));
+    ASSERT_EQ(4u, fired.size());
+    EXPECT_EQ(2, fired[0]);
+    EXPECT_EQ(4, fired[1]);
+    EXPECT_EQ(1, fired[2]);
+    EXPECT_EQ(5, fired[3]);
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* shouldReuseExpiredEntriesFromAFreeList
+ * C has no free list / forEach, but we verify timer_count after expire+schedule cycles. */
+TEST_F(TimerServiceTest, timerCountCorrectAfterExpireAndReschedule)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 1));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 2));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 3));
+    EXPECT_EQ(3, aeron_cluster_timer_service_timer_count(svc));
+
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 2));
+    EXPECT_EQ(1, aeron_cluster_timer_service_timer_count(svc));
+
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 4));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 5));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 6, 0));
+    EXPECT_EQ(4, aeron_cluster_timer_service_timer_count(svc));
+
+    fired.clear();
+    EXPECT_EQ(4, aeron_cluster_timer_service_poll(svc, 5));
+    ASSERT_EQ(4u, fired.size());
+    EXPECT_EQ(6, fired[0]);
+    EXPECT_EQ(3, fired[1]);
+    EXPECT_EQ(4, fired[2]);
+    EXPECT_EQ(5, fired[3]);
+    EXPECT_EQ(0, aeron_cluster_timer_service_timer_count(svc));
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* shouldReuseCanceledTimerEntriesFromAFreeList
+ * C has no free list / forEach, but we verify timer_count after cancel+schedule cycles. */
+TEST_F(TimerServiceTest, timerCountCorrectAfterCancelAndReschedule)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 1));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 2));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 3));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 4));
+    EXPECT_EQ(4, aeron_cluster_timer_service_timer_count(svc));
+
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 2));
+    EXPECT_TRUE(aeron_cluster_timer_service_cancel(svc, 4));
+    EXPECT_EQ(2, aeron_cluster_timer_service_timer_count(svc));
+
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 5));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 6, 0));
+    EXPECT_EQ(4, aeron_cluster_timer_service_timer_count(svc));
+
+    EXPECT_EQ(4, aeron_cluster_timer_service_poll(svc, 5));
+    ASSERT_EQ(4u, fired.size());
+    EXPECT_EQ(6, fired[0]);
+    EXPECT_EQ(1, fired[1]);
+    EXPECT_EQ(3, fired[2]);
+    EXPECT_EQ(5, fired[3]);
+    EXPECT_EQ(0, aeron_cluster_timer_service_timer_count(svc));
+    aeron_cluster_timer_service_close(svc);
+}
+
+/* snapshotProcessesAllScheduledTimers (Java-aligned with poll before snapshot) */
+TEST_F(TimerServiceTest, snapshotAfterPollProcessesRemainingTimers)
+{
+    std::vector<int64_t> fired;
+    aeron_cluster_timer_service_t *svc = nullptr;
+    ASSERT_EQ(0, aeron_cluster_timer_service_create(&svc, ordered_expiry, &fired));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 1, 10));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 2, 14));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 3, 30));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 4, 29));
+    ASSERT_EQ(0, aeron_cluster_timer_service_schedule(svc, 5, 15));
+
+    EXPECT_EQ(2, aeron_cluster_timer_service_poll(svc, 14));
+    ASSERT_EQ(2u, fired.size());
+    EXPECT_EQ(1, fired[0]);
+    EXPECT_EQ(2, fired[1]);
+
+    SnapshotCapture cap;
+    aeron_cluster_timer_service_snapshot(svc, capture_snapshot, &cap);
+    ASSERT_EQ(3u, cap.timers.size());
+    EXPECT_EQ(5, cap.timers[0].first);  EXPECT_EQ(15, cap.timers[0].second);
+    EXPECT_EQ(4, cap.timers[1].first);  EXPECT_EQ(29, cap.timers[1].second);
+    EXPECT_EQ(3, cap.timers[2].first);  EXPECT_EQ(30, cap.timers[2].second);
+    aeron_cluster_timer_service_close(svc);
+}

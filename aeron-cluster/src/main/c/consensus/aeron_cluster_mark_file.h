@@ -67,6 +67,9 @@ extern "C"
 #define AERON_CLUSTER_MARK_FILE_CANDIDATE_TERM_ID_OFFSET 40
 #define AERON_CLUSTER_MARK_FILE_HEADER_LENGTH_OFFSET 72
 #define AERON_CLUSTER_MARK_FILE_ERROR_BUFFER_LENGTH_OFFSET 76
+#define AERON_CLUSTER_MARK_FILE_CLUSTER_ID_OFFSET       80
+#define AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_OFFSET    256
+#define AERON_CLUSTER_MARK_FILE_AUTHENTICATOR_MAX_LEN   256
 
 typedef enum aeron_cluster_component_type_en
 {
@@ -132,6 +135,18 @@ void aeron_cluster_mark_file_filename(char *buf, size_t buf_len);
 
 /** Build filename for a service mark file: cluster-mark-service-<id>.dat */
 void aeron_cluster_mark_file_service_filename(char *buf, size_t buf_len, int service_id);
+
+/** Write the authenticator supplier class name into the mark file header. */
+void aeron_cluster_mark_file_set_authenticator(
+    aeron_cluster_mark_file_t *mark_file, const char *class_name);
+
+/** Read the authenticator supplier class name from the mark file header. Returns NULL-terminated string. */
+const char *aeron_cluster_mark_file_get_authenticator(
+    aeron_cluster_mark_file_t *mark_file, char *buf, size_t buf_len);
+
+/** Return the parent directory of the mark file path. */
+const char *aeron_cluster_mark_file_parent_directory(
+    aeron_cluster_mark_file_t *mark_file, char *buf, size_t buf_len);
 
 #ifdef __cplusplus
 }

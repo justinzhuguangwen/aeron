@@ -234,6 +234,12 @@ int aeron_cluster_standby_snapshot_replicator_poll(
     /* Create replication if not yet started */
     if (NULL == replicator->recording_replication)
     {
+        if (NULL == replicator->archive)
+        {
+            AERON_SET_ERR(EINVAL, "%s", "archive is NULL — cannot create replication");
+            return -1;
+        }
+
         const int64_t progress_timeout_ns   = INT64_C(10000000000); /* 10 s */
         const int64_t progress_interval_ns  = INT64_C(1000000000);  /* 1 s */
 

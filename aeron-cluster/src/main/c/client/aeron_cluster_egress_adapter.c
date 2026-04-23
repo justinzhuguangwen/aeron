@@ -220,3 +220,12 @@ void aeron_cluster_egress_adapter_close(aeron_cluster_egress_adapter_t *adapter)
     if (NULL != adapter->assembler) { aeron_fragment_assembler_delete(adapter->assembler); }
     aeron_free(adapter);
 }
+
+void aeron_cluster_egress_adapter_on_fragment_for_test(
+    aeron_cluster_egress_adapter_t *adapter,
+    const uint8_t *buffer,
+    size_t length,
+    aeron_header_t *header)
+{
+    on_egress_fragment(adapter, buffer, length, header);
+}

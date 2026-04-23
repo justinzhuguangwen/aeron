@@ -82,8 +82,8 @@ protected:
         aeron_delete_directory(m_base_dir.c_str());
         aeron_mkdir_recursive(m_base_dir.c_str(), 0777);
 
-        /* Use node_index=5 to get unique port 8015 -- avoids collision with other tests */
-        m_node = new TestClusterNode(5, 1, m_base_dir, std::cout);
+        /* port_base=5 to get unique port 8015 — avoids collision with other tests */
+        m_node = new TestClusterNode(0, 1, 5, m_base_dir, std::cout);
         m_node->start();
     }
 

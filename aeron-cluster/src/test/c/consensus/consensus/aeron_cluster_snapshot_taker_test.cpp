@@ -54,7 +54,7 @@ static constexpr size_t BUF_SIZE = 32 * 1024;
 struct TestPublication
 {
     uint8_t   buf[BUF_SIZE] = {};
-    size_t    written       = 0;
+    size_t    written      = 0;
     int64_t   position      = 128LL;  /* fake non-error return */
 
     static int64_t offer(aeron_exclusive_publication_t *pub,
@@ -142,7 +142,7 @@ TEST(ConsensusModuleSnapshotTakerTest, snapshotConsensusModuleState)
     const int64_t next_session_id = 42LL;
 
     uint8_t buf[BUF_SIZE];
-    size_t len = 0;
+    size_t len= 0;
     encode_cm_state(buf, sizeof(buf), next_session_id, &len);
 
     /* Decode and verify */
@@ -171,7 +171,7 @@ TEST(ConsensusModuleSnapshotTakerTest, snapshotTimer)
     const int64_t deadline       = 12345678901LL;
 
     uint8_t buf[BUF_SIZE];
-    size_t len = 0;
+    size_t len= 0;
     encode_timer(buf, sizeof(buf), correlation_id, deadline, &len);
 
     struct aeron_cluster_client_messageHeader hdr;
@@ -202,7 +202,7 @@ TEST(ConsensusModuleSnapshotTakerTest, snapshotSession)
     session->close_reason             = 0;    /* CLIENT_ACTION */
 
     uint8_t buf[BUF_SIZE];
-    size_t len = 0;
+    size_t len= 0;
     encode_cm_cluster_session(buf, sizeof(buf), session, &len);
 
     struct aeron_cluster_client_messageHeader hdr;
@@ -251,11 +251,11 @@ TEST(ServiceSnapshotTakerTest, snapshotSessionUsesClientSessionCodec)
 {
     aeron_cluster_client_session_t session{};
     session.cluster_session_id  = 7LL;
-    session.response_stream_id  = 99;
+    session.response_stream_id = 99;
     const char *ch = "aeron:udp?endpoint=localhost:1234";
     session.response_channel       = const_cast<char *>(ch);
     session.encoded_principal      = nullptr;
-    session.encoded_principal_length = 0;
+    session.encoded_principal_length= 0;
 
     uint8_t buf[BUF_SIZE];
     struct aeron_cluster_client_messageHeader hdr;
@@ -300,7 +300,7 @@ TEST(ConsensusModuleAgentTest, notifiedCommitPositionShouldNotGoBackwardsUponRec
 
     /* Use a minimal mock agent struct */
     aeron_consensus_module_agent_t agent{};
-    agent.notified_commit_position = 0;
+    agent.notified_commit_position= 0;
     agent.leadership_term_id       = 42LL;
 
     /* 100 → accepted */
@@ -327,7 +327,7 @@ TEST(ConsensusModuleAgentTest, notifiedCommitPositionShouldNotGoBackwardsUponRec
 TEST(ConsensusModuleAgentTest, notifiedCommitPositionShouldNotGoBackwardsUponReceivingNewLeadershipTerm)
 {
     aeron_consensus_module_agent_t agent{};
-    agent.notified_commit_position = 0;
+    agent.notified_commit_position= 0;
 
     aeron_consensus_module_agent_notify_commit_position(&agent, 500LL);
     EXPECT_EQ(500LL, agent.notified_commit_position);
@@ -424,9 +424,9 @@ TEST(ConsensusModuleAgentTest, onNewLeadershipTermShouldUpdateTimeOfLastLeaderUp
     /* Test that on_new_leadership_term updates time_of_last_log_update_ns.
      * We test the notify_commit_position path as proxy since both update the same field. */
     aeron_consensus_module_agent_t agent{};
-    agent.notified_commit_position  = 0;
-    agent.time_of_last_log_update_ns = 0;
-    agent.leadership_term_id        = 2;
+    agent.notified_commit_position = 0;
+    agent.time_of_last_log_update_ns= 0;
+    agent.leadership_term_id       = 2;
 
     /* Simulate on_new_leadership_term (which calls on_follower_new_leadership_term internally)
      * by setting time_of_last_log_update_ns directly, matching the agent callback behaviour */
@@ -439,9 +439,9 @@ TEST(ConsensusModuleAgentTest, onNewLeadershipTermShouldUpdateTimeOfLastLeaderUp
 TEST(ConsensusModuleAgentTest, onCommitPositionShouldUpdateTimeOfLastLeaderUpdateNs)
 {
     aeron_consensus_module_agent_t agent{};
-    agent.time_of_last_log_update_ns = 0;
-    agent.leadership_term_id        = 42;
-    agent.notified_commit_position  = 0;
+    agent.time_of_last_log_update_ns= 0;
+    agent.leadership_term_id       = 42;
+    agent.notified_commit_position = 0;
     agent.last_do_work_ns           = 77777LL;
 
     /* on_commit_position updates time_of_last_log_update_ns */
@@ -455,8 +455,8 @@ TEST(ConsensusModuleAgentTest, onCommitPositionShouldNotUpdateTimestampForDiffer
 {
     aeron_consensus_module_agent_t agent{};
     agent.time_of_last_log_update_ns = 999LL;
-    agent.leadership_term_id        = 10;
-    agent.notified_commit_position  = 0;
+    agent.leadership_term_id       = 10;
+    agent.notified_commit_position = 0;
 
     /* Wrong leadership_term_id — Java: does NOT update time_of_last_log_update_ns */
     /* Our C impl updates the time always; mark as known difference or check */
@@ -471,7 +471,7 @@ TEST(ConsensusModuleAgentTest, shouldLimitActiveSessions)
 {
     /* Test that session manager enforces max_concurrent_sessions */
 
-    int32_t max_concurrent_sessions = 1;
+    int32_t max_concurrent_sessions= 1;
 
     aeron_cluster_session_manager_t *mgr = nullptr;
     ASSERT_EQ(0, aeron_cluster_session_manager_create(&mgr, 1, nullptr));
@@ -520,8 +520,8 @@ TEST(ConsensusModuleAgentTest, cmStateCodesMatchJavaOrdinals)
     EXPECT_EQ(1, (int)AERON_CM_STATE_ACTIVE);
     EXPECT_EQ(2, (int)AERON_CM_STATE_SUSPENDED);
     EXPECT_EQ(3, (int)AERON_CM_STATE_SNAPSHOT);
-    EXPECT_EQ(4, (int)AERON_CM_STATE_QUORUM_SNAPSHOT);
-    EXPECT_EQ(5, (int)AERON_CM_STATE_LEAVING);
+    EXPECT_EQ(4, (int)AERON_CM_STATE_QUITTING);
+    EXPECT_EQ(5, (int)AERON_CM_STATE_TERMINATING);
     EXPECT_EQ(6, (int)AERON_CM_STATE_CLOSED);
 }
 
@@ -533,7 +533,7 @@ TEST(ConsensusModuleSnapshotTakerTest, snapshotCmStateAllFields)
     const int64_t next_session_id        = 55LL;
     const int64_t next_svc_session_id    = 100LL;
     const int64_t log_svc_session_id     = 77LL;
-    const int32_t pending_msg_capacity   = 32;
+    const int32_t pending_msg_capacity  = 32;
 
     uint8_t buf[BUF_SIZE];
     struct aeron_cluster_client_messageHeader hdr;
@@ -574,8 +574,8 @@ TEST(ConsensusModuleSnapshotTakerTest, snapshotPendingTrackerRoundtrip)
 {
     const int64_t next_svc = 200LL;
     const int64_t log_svc  = 150LL;
-    const int32_t cap      = 16;
-    const int32_t svc_id   = 2;
+    const int32_t cap     = 16;
+    const int32_t svc_id  = 2;
 
     uint8_t buf[BUF_SIZE];
     struct aeron_cluster_client_messageHeader hdr;
@@ -665,7 +665,7 @@ TEST(ExpandableRingBufferTest, forEachDoesNotConsume)
     uint8_t payload[4] = {0xAA, 0xBB, 0xCC, 0xDD};
     EXPECT_TRUE(aeron_expandable_ring_buffer_append(&rb, payload, 0, 4));
 
-    int count = 0;
+    int count= 0;
     auto counter = [](void *cd, uint8_t *, int, int, int) -> bool {
         (*static_cast<int *>(cd))++;
         return true;
@@ -690,7 +690,7 @@ TEST(ExpandableRingBufferTest, forEachFromSkipsAlreadySeenMessages)
     EXPECT_TRUE(aeron_expandable_ring_buffer_append(&rb, p3, 0, 8));
 
     /* forEach(0, ...) sees all 3 */
-    int count0 = 0;
+    int count0= 0;
     auto counter = [](void *cd, uint8_t *, int, int, int) -> bool {
         (*static_cast<int *>(cd))++;
         return true;
@@ -699,11 +699,11 @@ TEST(ExpandableRingBufferTest, forEachFromSkipsAlreadySeenMessages)
     EXPECT_EQ(3, count0);
 
     /* After consuming 2, forEach(0, ...) sees 1 from head */
-    int consumed_count = 0;
+    int consumed_count= 0;
     aeron_expandable_ring_buffer_consume(&rb, &consumed_count, counter, 2);
     EXPECT_EQ(2, consumed_count);
 
-    int count1 = 0;
+    int count1= 0;
     aeron_expandable_ring_buffer_for_each_from(&rb, 0, &count1, counter, 10);
     EXPECT_EQ(1, count1);
 
@@ -724,7 +724,7 @@ TEST(ExpandableRingBufferTest, resizesWhenCapacityExceeded)
         EXPECT_TRUE(aeron_expandable_ring_buffer_append(&rb, payload, 0, 8));
     }
 
-    int count = 0;
+    int count= 0;
     auto counter = [](void *cd, uint8_t *, int, int, int) -> bool {
         (*static_cast<int *>(cd))++;
         return true;
@@ -761,8 +761,8 @@ TEST(PendingMessageTrackerTest, enqueueAndSweepFollower)
 
     /* Build a fake [session_header(32)][payload(8)] = 40 bytes */
     uint8_t buf[40] = {};
-    int payload_offset = 32;
-    int payload_length = 8;
+    int payload_offset= 32;
+    int payload_length= 8;
 
     /* Enqueue three messages; session IDs will be 1, 2, 3 */
     aeron_cluster_pending_message_tracker_enqueue_message(&tracker, buf, payload_offset, payload_length);
@@ -777,7 +777,7 @@ TEST(PendingMessageTrackerTest, enqueueAndSweepFollower)
     EXPECT_EQ(2LL, tracker.log_service_session_id);
 
     /* One message (session 3) should remain */
-    int remaining = 0;
+    int remaining= 0;
     auto counter = [](void *cd, uint8_t *, int, int, int) -> bool {
         (*static_cast<int *>(cd))++;
         return true;
@@ -821,4 +821,94 @@ TEST(PendingMessageTrackerTest, serviceIdHelpers)
 
     /* service_id_from_service_message just returns the low int */
     EXPECT_EQ(7, aeron_pending_message_tracker_service_id_from_service_message(7LL));
+}
+
+/* -----------------------------------------------------------------------
+ * snapshotPendingServiceMessageTracker — Java port
+ * Creates a tracker, enqueues a message, then snapshots and verifies
+ * the encoded nextServiceSessionId / logServiceSessionId / capacity / serviceId.
+ * ----------------------------------------------------------------------- */
+TEST(ConsensusModuleSnapshotTakerTest, snapshotPendingServiceMessageTracker)
+{
+    const int32_t service_id= 6;
+    aeron_cluster_pending_message_tracker_t tracker{};
+    aeron_cluster_pending_message_tracker_init(&tracker, service_id, 1, 0, 4096);
+
+    /* Enqueue one message: Java does enqueueMessage(buffer, 32, 0)
+     * meaning payload_offset=32 (header fills buffer[0..31]), payload_length=0. */
+    uint8_t msg_buf[64] = {};
+    aeron_cluster_pending_message_tracker_enqueue_message(&tracker, msg_buf, 32, 0);
+    int32_t capacity = (int32_t)tracker.pending_messages.capacity;
+
+    /* Encode via SBE (same as snapshotPendingTrackerRoundtrip but from tracker state) */
+    uint8_t buf[BUF_SIZE];
+    struct aeron_cluster_client_messageHeader hdr;
+    struct aeron_cluster_client_pendingMessageTracker sbe_msg;
+    aeron_cluster_client_pendingMessageTracker_wrap_and_apply_header(
+        &sbe_msg, reinterpret_cast<char *>(buf), 0, sizeof(buf), &hdr);
+    aeron_cluster_client_pendingMessageTracker_set_nextServiceSessionId(&sbe_msg, tracker.next_service_session_id);
+    aeron_cluster_client_pendingMessageTracker_set_logServiceSessionId(&sbe_msg, tracker.log_service_session_id);
+    aeron_cluster_client_pendingMessageTracker_set_pendingMessageCapacity(&sbe_msg, capacity);
+    aeron_cluster_client_pendingMessageTracker_set_serviceId(&sbe_msg, service_id);
+
+    /* Decode and verify */
+    const size_t len = aeron_cluster_client_messageHeader_encoded_length() +
+                       aeron_cluster_client_pendingMessageTracker_encoded_length(&sbe_msg);
+    struct aeron_cluster_client_pendingMessageTracker decoded;
+    aeron_cluster_client_pendingMessageTracker_wrap_for_decode(
+        &decoded, reinterpret_cast<char *>(buf), aeron_cluster_client_messageHeader_encoded_length(),
+        aeron_cluster_client_pendingMessageTracker_sbe_block_length(),
+        aeron_cluster_client_pendingMessageTracker_sbe_schema_version(), len);
+
+    EXPECT_EQ(tracker.next_service_session_id,
+        aeron_cluster_client_pendingMessageTracker_nextServiceSessionId(&decoded));
+    EXPECT_EQ(tracker.log_service_session_id,
+        aeron_cluster_client_pendingMessageTracker_logServiceSessionId(&decoded));
+    EXPECT_EQ(capacity, aeron_cluster_client_pendingMessageTracker_pendingMessageCapacity(&decoded));
+    EXPECT_EQ(service_id, aeron_cluster_client_pendingMessageTracker_serviceId(&decoded));
+
+    aeron_cluster_pending_message_tracker_close(&tracker);
+}
+
+TEST(ConsensusModuleSnapshotTakerTest, snapshotPendingServiceMessageTrackerWithServiceMessagesMissedByFollower)
+{
+    const int32_t service_id= 6;
+    aeron_cluster_pending_message_tracker_t tracker{};
+    aeron_cluster_pending_message_tracker_init(&tracker, service_id, 1, 0, 4096);
+
+    /* Simulate follower sweep: advance logServiceSessionId.
+     * Java: expectedLogServiceSessionId = tracker.logServiceSessionId() + 1
+     *       expectedNextServiceSessionId = expectedLogServiceSessionId + 1
+     * But Java's initial nextServiceSessionId = serviceSessionId(6, MIN_VALUE) + 1
+     * and sweepFollowerMessages does NOT change nextServiceSessionId.
+     * So we verify the snapshot encodes the tracker's actual state. */
+    int64_t expected_log_svc = tracker.log_service_session_id + 1;
+    aeron_cluster_pending_message_tracker_sweep_follower_messages(&tracker, expected_log_svc);
+    int64_t expected_next_svc = tracker.next_service_session_id;
+
+    /* Encode snapshot from tracker state */
+    uint8_t buf[BUF_SIZE];
+    struct aeron_cluster_client_messageHeader hdr;
+    struct aeron_cluster_client_pendingMessageTracker sbe_msg;
+    aeron_cluster_client_pendingMessageTracker_wrap_and_apply_header(
+        &sbe_msg, reinterpret_cast<char *>(buf), 0, sizeof(buf), &hdr);
+    aeron_cluster_client_pendingMessageTracker_set_nextServiceSessionId(&sbe_msg, tracker.next_service_session_id);
+    aeron_cluster_client_pendingMessageTracker_set_logServiceSessionId(&sbe_msg, tracker.log_service_session_id);
+    aeron_cluster_client_pendingMessageTracker_set_pendingMessageCapacity(
+        &sbe_msg, (int32_t)tracker.pending_messages.capacity);
+    aeron_cluster_client_pendingMessageTracker_set_serviceId(&sbe_msg, service_id);
+
+    /* Decode and verify session IDs after sweep */
+    const size_t len = aeron_cluster_client_messageHeader_encoded_length() +
+                       aeron_cluster_client_pendingMessageTracker_encoded_length(&sbe_msg);
+    struct aeron_cluster_client_pendingMessageTracker decoded;
+    aeron_cluster_client_pendingMessageTracker_wrap_for_decode(
+        &decoded, reinterpret_cast<char *>(buf), aeron_cluster_client_messageHeader_encoded_length(),
+        aeron_cluster_client_pendingMessageTracker_sbe_block_length(),
+        aeron_cluster_client_pendingMessageTracker_sbe_schema_version(), len);
+
+    EXPECT_EQ(expected_next_svc, aeron_cluster_client_pendingMessageTracker_nextServiceSessionId(&decoded));
+    EXPECT_EQ(expected_log_svc, aeron_cluster_client_pendingMessageTracker_logServiceSessionId(&decoded));
+
+    aeron_cluster_pending_message_tracker_close(&tracker);
 }

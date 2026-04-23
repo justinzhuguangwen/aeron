@@ -902,6 +902,135 @@ int aeron_archive_catalog_update_recording_position(
     return 0;
 }
 
+int aeron_archive_catalog_update_start_position(
+    aeron_archive_catalog_t *catalog,
+    int64_t recording_id,
+    int64_t new_start_position)
+{
+    if (NULL == catalog || catalog->is_closed)
+    {
+        AERON_SET_ERR(EINVAL, "%s", "catalog is NULL or closed");
+        return -1;
+    }
+
+    int64_t offset64 = aeron_archive_catalog_index_recording_offset(&catalog->index, recording_id);
+    if (offset64 < 0)
+    {
+        AERON_SET_ERR(EINVAL, "recording not found: %" PRId64, recording_id);
+        return -1;
+    }
+
+    int32_t body_offset = (int32_t)offset64 + AERON_ARCHIVE_RECORDING_DESCRIPTOR_HEADER_LENGTH;
+    aeron_archive_catalog_put_int64(
+        catalog->buffer,
+        body_offset + AERON_ARCHIVE_RECORDING_DESCRIPTOR_START_POSITION_OFFSET,
+        new_start_position);
+    aeron_archive_catalog_force_writes(catalog);
+    return 0;
+}
+
+int aeron_archive_catalog_update_stop_position(
+    aeron_archive_catalog_t *catalog,
+    int64_t recording_id,
+    int64_t new_stop_position)
+{
+    if (NULL == catalog || catalog->is_closed)
+    {
+        AERON_SET_ERR(EINVAL, "%s", "catalog is NULL or closed");
+        return -1;
+    }
+
+    int64_t offset64 = aeron_archive_catalog_index_recording_offset(&catalog->index, recording_id);
+    if (offset64 < 0)
+    {
+        AERON_SET_ERR(EINVAL, "recording not found: %" PRId64, recording_id);
+        return -1;
+    }
+
+    int32_t body_offset = (int32_t)offset64 + AERON_ARCHIVE_RECORDING_DESCRIPTOR_HEADER_LENGTH;
+    aeron_archive_catalog_put_int64(
+        catalog->buffer,
+        body_offset + AERON_ARCHIVE_RECORDING_DESCRIPTOR_STOP_POSITION_OFFSET,
+        new_stop_position);
+    aeron_archive_catalog_force_writes(catalog);
+    return 0;
+}
+
+int aeron_archive_catalog_replace_recording(
+    aeron_archive_catalog_t *catalog,
+    int64_t recording_id,
+    int64_t start_position,
+    int64_t stop_position,
+    int64_t start_timestamp,
+    int64_t stop_timestamp,
+    int32_t initial_term_id,
+    int32_t segment_file_length,
+    int32_t term_buffer_length,
+    int32_t mtu_length,
+    int32_t session_id,
+    int32_t stream_id,
+    const char *stripped_channel,
+    const char *original_channel,
+    const char *source_identity)
+{
+    if (NULL == catalog || catalog->is_closed)
+    {
+        AERON_SET_ERR(EINVAL, "%s", "catalog is NULL or closed");
+        return -1;
+    }
+
+    int64_t offset64 = aeron_archive_catalog_index_recording_offset(&catalog->index, recording_id);
+    if (offset64 < 0)
+    {
+        AERON_SET_ERR(EINVAL, "recording not found: %" PRId64, recording_id);
+        return -1;
+    }
+
+    const int32_t descriptor_offset = (int32_t)offset64;
+    const int32_t existing_frame_length =
+        aeron_archive_catalog_get_int32(catalog->buffer, descriptor_offset);
+
+    const size_t stripped_len = (NULL != stripped_channel) ? strlen(stripped_channel) : 0;
+    const size_t original_len = (NULL != original_channel) ? strlen(original_channel) : 0;
+    const size_t source_len = (NULL != source_identity) ? strlen(source_identity) : 0;
+    const int32_t new_frame_length = aeron_archive_catalog_recording_descriptor_frame_length(
+        catalog->alignment, stripped_len, original_len, source_len);
+
+    if (new_frame_length != existing_frame_length)
+    {
+        /* Variable-length fields don't fit the existing slot — caller must
+         * fall back to invalidate + add_recording (which shifts recording_id). */
+        AERON_SET_ERR(EINVAL,
+            "replace frame length %d != existing %d",
+            new_frame_length, existing_frame_length);
+        return -1;
+    }
+
+    aeron_archive_catalog_encode_descriptor(
+        catalog->buffer,
+        descriptor_offset,
+        existing_frame_length,
+        recording_id,
+        start_position,
+        stop_position,
+        start_timestamp,
+        stop_timestamp,
+        initial_term_id,
+        segment_file_length,
+        term_buffer_length,
+        mtu_length,
+        session_id,
+        stream_id,
+        stripped_channel,
+        stripped_len,
+        original_channel,
+        original_len,
+        source_identity,
+        source_len);
+    aeron_archive_catalog_force_writes(catalog);
+    return 0;
+}
+
 int aeron_archive_catalog_invalidate_recording(
     aeron_archive_catalog_t *catalog,
     int64_t recording_id)

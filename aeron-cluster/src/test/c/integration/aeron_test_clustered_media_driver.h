@@ -23,30 +23,27 @@
 /**
  * C equivalent of Java ClusteredMediaDriver: bundles MediaDriver + Archive + ConsensusModule.
  *
- * This is a TEST HELPER. It:
- * 1. Launches an aeron_archiving_media_driver_t (driver + archive, with background threads)
- * 2. Optionally creates and starts an aeron_consensus_module_agent_t (CM agent, with background thread)
+ * Identity model (aligned with Java TestCluster):
+ *   - member_id ∈ [0, member_count) — member identity; iterated 0..n-1 identically
+ *     across nodes so every node computes the same cluster_members /
+ *     ingress_endpoints view
+ *   - port_base — starting port offset to disambiguate concurrent tests
+ *     (plays Java `clusterId`'s role). All nodes in a cluster share the
+ *     same port_base; ports are derived from (port_base + member_id)
  *
- * The CM agent creates its own Aeron client from aeron_dir and its own archive client
- * connected via IPC to the in-process archive, matching Java's pattern where each component
- * manages its own connections.
- *
- * The header deliberately does NOT include service/consensus headers to avoid typedef
- * conflicts with the cluster client module. Implementation is in the .cpp file.
- *
- * Usage:
- *   TestClusteredMediaDriver cmd(0, 1, baseDir, std::cout);
- *   cmd.launch();           // full: driver + archive + CM
- *   cmd.launch_driver_only(); // partial: driver + archive only
- *   cmd.is_leader();
- *   cmd.close();
+ * Old callers supplied a single `node_index` that encoded both roles
+ * (node_index = port_base + member_id). Each node re-derived port_base via
+ * `base = node_index - (node_index % member_count)`, which diverged across
+ * nodes when port_base wasn't a multiple of member_count. Splitting the
+ * args fixes that and matches Java's (clusterId, memberId, memberCount).
  */
 class TestClusteredMediaDriver
 {
 public:
     TestClusteredMediaDriver(
-        int node_index,
-        int node_count,
+        int member_id,
+        int member_count,
+        int port_base,
         const std::string &base_dir,
         std::ostream &stream);
 
@@ -69,6 +66,9 @@ public:
     const std::string &cluster_dir() const;
     const std::string &cluster_members() const;
     const std::string &ingress_endpoints() const;
+
+    /** Legacy accessor returning port_base + member_id — kept for callers
+     * that used it as a node identifier in logs. */
     int node_index() const;
 
 private:

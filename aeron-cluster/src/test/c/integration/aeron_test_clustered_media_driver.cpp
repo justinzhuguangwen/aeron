@@ -42,7 +42,10 @@ extern "C"
 
 struct TestClusteredMediaDriver::Impl
 {
-    int                  node_index;
+    int                  member_id;      /* 0..member_count-1 */
+    int                  member_count;
+    int                  port_base;      /* all members share this */
+    int                  node_index;     /* = port_base + member_id (for dir name / logs) */
     std::string          aeron_dir;
     std::string          archive_dir;
     std::string          cluster_dir;
@@ -57,7 +60,12 @@ struct TestClusteredMediaDriver::Impl
     std::thread          cm_thread;
     std::atomic<bool>    cm_running{false};
 
-    Impl(int idx, std::ostream &s) : node_index(idx), stream(s) {}
+    Impl(int member_id_, int member_count_, int port_base_, std::ostream &s)
+        : member_id(member_id_),
+          member_count(member_count_),
+          port_base(port_base_),
+          node_index(port_base_ + member_id_),
+          stream(s) {}
 
     int launch_archiving_media_driver()
     {
@@ -247,13 +255,15 @@ struct TestClusteredMediaDriver::Impl
  * ----------------------------------------------------------------------- */
 
 TestClusteredMediaDriver::TestClusteredMediaDriver(
-    int node_index,
-    int node_count,
+    int member_id,
+    int member_count,
+    int port_base,
     const std::string &base_dir,
     std::ostream &stream)
 {
-    m_impl = new Impl(node_index, stream);
+    m_impl = new Impl(member_id, member_count, port_base, stream);
 
+    const int node_index = port_base + member_id;
     std::string node_name = "node" + std::to_string(node_index);
     char node_dir[AERON_MAX_PATH], resolved[AERON_MAX_PATH];
     aeron_file_resolve(base_dir.c_str(), node_name.c_str(), node_dir, sizeof(node_dir));
@@ -265,12 +275,14 @@ TestClusteredMediaDriver::TestClusteredMediaDriver(
     aeron_file_resolve(node_dir, "cluster", resolved, sizeof(resolved));
     m_impl->cluster_dir = resolved;
 
-    int base = node_index - (node_index % ((node_count > 1) ? node_count : 1));
-    if (node_count == 1) { base = node_index; }
+    /* All members iterate the same (port_base, 0..member_count-1) so every
+     * node computes identical cluster_members / ingress_endpoints views.
+     * Mirrors Java TestCluster.clusterMembers / ingressEndpoints which are
+     * pure functions of (clusterId, memberCount). */
     m_impl->cluster_members = "";
-    for (int i = 0; i < node_count; i++)
+    for (int i = 0; i < member_count; i++)
     {
-        int mn = base + i;
+        const int mn = port_base + i;
         if (i > 0) m_impl->cluster_members += "|";
         m_impl->cluster_members += std::to_string(i) +
             ",localhost:" + std::to_string(20110 + mn) +
@@ -281,9 +293,9 @@ TestClusteredMediaDriver::TestClusteredMediaDriver(
     }
 
     m_impl->ingress_endpoints = "";
-    for (int i = 0; i < node_count; i++)
+    for (int i = 0; i < member_count; i++)
     {
-        int mn = base + i;
+        const int mn = port_base + i;
         if (i > 0) m_impl->ingress_endpoints += ",";
         m_impl->ingress_endpoints += std::to_string(i) + "=localhost:" + std::to_string(20110 + mn);
     }

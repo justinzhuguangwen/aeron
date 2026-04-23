@@ -78,8 +78,12 @@ static void heap_sift_down(timer_node_t *heap, int size, int i)
         int smallest = i;
         int left  = 2 * i + 1;
         int right = 2 * i + 2;
-        if (left  < size && heap[left].deadline_ns  < heap[smallest].deadline_ns) { smallest = left;  }
-        if (right < size && heap[right].deadline_ns < heap[smallest].deadline_ns) { smallest = right; }
+        /* Use <= (not <) so that equal-deadline children are preferred over the
+         * current node.  This matches Java PriorityHeapTimerService.shiftDown()
+         * which continues moving down when timer.deadline >= nextTimer.deadline,
+         * ensuring FIFO ordering among timers with the same deadline. */
+        if (left  < size && heap[left].deadline_ns  <= heap[smallest].deadline_ns) { smallest = left;  }
+        if (right < size && heap[right].deadline_ns <  heap[smallest].deadline_ns) { smallest = right; }
         if (smallest == i) { break; }
         timer_node_t tmp = heap[i];
         heap[i] = heap[smallest];
@@ -93,6 +97,12 @@ int aeron_cluster_timer_service_create(
     aeron_cluster_timer_expiry_func_t on_expiry,
     void *clientd)
 {
+    if (NULL == on_expiry)
+    {
+        AERON_SET_ERR(EINVAL, "%s", "timer handler must not be NULL");
+        return -1;
+    }
+
     aeron_cluster_timer_service_t *svc = NULL;
     if (aeron_alloc((void **)&svc, sizeof(aeron_cluster_timer_service_t)) < 0)
     {

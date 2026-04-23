@@ -67,8 +67,8 @@ protected:
         m_ctx.cool_down_interval_ns           = COOL_DOWN_INTERVAL_NS;
         m_ctx.replication_progress_timeout_ns  = INT64_C(5000) * INT64_C(1000000);
         m_ctx.replication_progress_interval_ns = INT64_C(500)  * INT64_C(1000000);
-        m_ctx.log_stream_id       = 100;
-        m_ctx.consensus_stream_id = 20;
+        m_ctx.log_stream_id      = 100;
+        m_ctx.consensus_stream_id= 20;
 
         strncpy(m_ctx.consensus_channel,
                 "aeron:udp?endpoint=localhost:9001",
@@ -231,7 +231,7 @@ TEST_F(ClusterBackupAgentTest, doUpdateRecordingLogTransitionsToBacking)
     m_agent->state                      = AERON_CLUSTER_BACKUP_STATE_UPDATE_RECORDING_LOG;
     m_agent->leader_log_entry_pending   = false;
     m_agent->leader_last_term_entry_pending = false;
-    m_agent->snapshots_retrieved_count  = 0;
+    m_agent->snapshots_retrieved_count = 0;
     m_agent->time_of_last_progress_ms   = BACKUP_NOW_MS;
 
     int work = aeron_cluster_backup_agent_do_work(m_agent, BACKUP_NOW_MS);
@@ -244,7 +244,7 @@ TEST_F(ClusterBackupAgentTest, doUpdateRecordingLogAppendsUnknownLeaderLastTermE
 {
     m_agent->state                      = AERON_CLUSTER_BACKUP_STATE_UPDATE_RECORDING_LOG;
     m_agent->leader_log_entry_pending   = false;
-    m_agent->snapshots_retrieved_count  = 0;
+    m_agent->snapshots_retrieved_count = 0;
     m_agent->time_of_last_progress_ms   = BACKUP_NOW_MS;
 
     /* Pending last-term entry with leadership_term_id=7 (unknown in empty log) */
@@ -349,7 +349,7 @@ TEST_F(ClusterBackupAgentTest, doUpdateRecordingLogAppendsLeaderLogEntryWhenSnap
     m_agent->leader_log_entry_term_base_log_position     = INT64_C(0);
     m_agent->leader_log_entry_timestamp                  = INT64_C(0);
     m_agent->leader_last_term_entry_pending              = false;
-    m_agent->snapshots_retrieved_count                   = 0;
+    m_agent->snapshots_retrieved_count                  = 0;
 
     aeron_cluster_backup_agent_do_work(m_agent, BACKUP_NOW_MS);
 
@@ -375,8 +375,8 @@ TEST_F(ClusterBackupAgentTest, progressTimeoutResetsAnyNonTerminalState)
 TEST_F(ClusterBackupAgentTest, doResetBackupClearsSnapshotCounts)
 {
     m_agent->state = AERON_CLUSTER_BACKUP_STATE_RESET_BACKUP;
-    m_agent->snapshots_to_retrieve_count = 5;
-    m_agent->snapshots_retrieved_count   = 3;
+    m_agent->snapshots_to_retrieve_count= 5;
+    m_agent->snapshots_retrieved_count  = 3;
     m_agent->time_of_last_progress_ms = BACKUP_NOW_MS;
 
     aeron_cluster_backup_agent_do_work(m_agent, BACKUP_NOW_MS);
@@ -384,4 +384,69 @@ TEST_F(ClusterBackupAgentTest, doResetBackupClearsSnapshotCounts)
     /* reset_agent clears counts */
     EXPECT_EQ(0, m_agent->snapshots_to_retrieve_count);
     EXPECT_EQ(0, m_agent->snapshots_retrieved_count);
+}
+
+/* -----------------------------------------------------------------------
+ * replayStartPosition tests — mirrors Java ClusterBackupAgentTest
+ * ----------------------------------------------------------------------- */
+
+static int64_t mock_get_stop_position(void *clientd, int64_t recording_id)
+{
+    (void)clientd;
+    int64_t *positions = (int64_t *)clientd;
+    /* For simplicity, return the value stored at positions[0] */
+    return (NULL != positions) ? positions[0] : recording_id;
+}
+
+TEST(ClusterBackupReplayStartPositionTest, shouldReturnNullPositionIfLastTermIsNullAndSnapshotsIsEmpty)
+{
+    EXPECT_EQ(AERON_NULL_VALUE,
+        aeron_cluster_backup_agent_replay_start_position(
+            NULL, NULL, 0,
+            AERON_CLUSTER_BACKUP_REPLAY_START_BEGINNING,
+            NULL, NULL));
+}
+
+TEST(ClusterBackupReplayStartPositionTest, shouldReturnReplayStartPositionIfAlreadyExisting)
+{
+    int64_t expected_position= 892374;
+    int64_t stop_positions[] = { expected_position };
+
+    aeron_cluster_recording_log_entry_t last_term;
+    memset(&last_term, 0, sizeof(last_term));
+    last_term.recording_id= 234;
+
+    int64_t result = aeron_cluster_backup_agent_replay_start_position(
+        &last_term, NULL, 0,
+        AERON_CLUSTER_BACKUP_REPLAY_START_BEGINNING,
+        mock_get_stop_position, stop_positions);
+
+    EXPECT_EQ(expected_position, result);
+}
+
+TEST(ClusterBackupReplayStartPositionTest, shouldLargestPositionLessThanOrEqualToInitialReplayPosition)
+{
+    aeron_cluster_backup_snapshot_t snapshots[] = {
+        { 1, 0, 0, 1000, 0, AERON_CM_SERVICE_ID },
+        { 1, 0, 0, 2000, 0, AERON_CM_SERVICE_ID },
+        { 1, 0, 0, 3000, 0, AERON_CM_SERVICE_ID },
+        { 1, 0, 0, 4000, 0, AERON_CM_SERVICE_ID },
+        { 1, 0, 0, 5000, 0, AERON_CM_SERVICE_ID },
+        { 1, 0, 0, 6000, 0, AERON_CM_SERVICE_ID },
+    };
+    int count = (int)(sizeof(snapshots) / sizeof(snapshots[0]));
+
+    /* BEGINNING with no lastTerm → NULL_POSITION */
+    EXPECT_EQ(AERON_NULL_VALUE,
+        aeron_cluster_backup_agent_replay_start_position(
+            NULL, snapshots, count,
+            AERON_CLUSTER_BACKUP_REPLAY_START_BEGINNING,
+            NULL, NULL));
+
+    /* LATEST_SNAPSHOT with no lastTerm → largest CM snapshot log_position */
+    EXPECT_EQ(6000,
+        aeron_cluster_backup_agent_replay_start_position(
+            NULL, snapshots, count,
+            AERON_CLUSTER_BACKUP_REPLAY_START_LATEST_SNAPSHOT,
+            NULL, NULL));
 }

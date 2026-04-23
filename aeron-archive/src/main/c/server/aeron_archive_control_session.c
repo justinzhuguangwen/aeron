@@ -425,7 +425,12 @@ int aeron_archive_control_session_do_work(
             break;
 
         case AERON_ARCHIVE_CONTROL_SESSION_STATE_CHALLENGED:
-            /* In a full implementation, the authenticator would be polled here. */
+            /* No pluggable authenticator in C yet (Java's
+             * AuthenticatorSupplier not ported). Default-accept: move to
+             * AUTHENTICATED so the session can proceed. A future
+             * authenticator hook would sit here, poll for a decision, and
+             * transition either to AUTHENTICATED or REJECTED. */
+            session->state = AERON_ARCHIVE_CONTROL_SESSION_STATE_AUTHENTICATED;
             work_count += 1;
             break;
 
@@ -915,10 +920,24 @@ void aeron_archive_control_session_on_replicate(
     const uint8_t *encoded_credentials, size_t encoded_credentials_length,
     const char *src_response_channel)
 {
+    (void)channel_tag_id;
+    (void)subscription_tag_id;
+    (void)file_io_max_length;
+    (void)replication_session_id;
+    (void)encoded_credentials;
+    (void)encoded_credentials_length;
+    (void)src_response_channel;
     aeron_archive_control_session_attempt_to_activate(session);
     if (AERON_ARCHIVE_CONTROL_SESSION_STATE_ACTIVE == session->state)
     {
-        /* conductor->replicate(...); */
+        if (aeron_archive_conductor_replicate(
+                session->conductor, correlation_id,
+                src_recording_id, dst_recording_id, stop_position,
+                src_control_stream_id, src_control_channel,
+                live_destination, replication_channel, session) < 0)
+        {
+            aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+        }
     }
 }
 
@@ -928,7 +947,11 @@ void aeron_archive_control_session_on_stop_replication(
     aeron_archive_control_session_attempt_to_activate(session);
     if (AERON_ARCHIVE_CONTROL_SESSION_STATE_ACTIVE == session->state)
     {
-        /* conductor->stopReplication(correlation_id, replication_id, session); */
+        if (aeron_archive_conductor_stop_replication(
+                session->conductor, correlation_id, replication_id, session) < 0)
+        {
+            aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+        }
     }
 }
 
@@ -939,7 +962,11 @@ void aeron_archive_control_session_on_detach_segments(
     aeron_archive_control_session_attempt_to_activate(session);
     if (AERON_ARCHIVE_CONTROL_SESSION_STATE_ACTIVE == session->state)
     {
-        /* conductor->detachSegments(correlation_id, recording_id, new_start_position, session); */
+        if (aeron_archive_conductor_detach_segments(
+                session->conductor, correlation_id, recording_id, new_start_position, session) < 0)
+        {
+            aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+        }
     }
 }
 
@@ -949,7 +976,11 @@ void aeron_archive_control_session_on_delete_detached_segments(
     aeron_archive_control_session_attempt_to_activate(session);
     if (AERON_ARCHIVE_CONTROL_SESSION_STATE_ACTIVE == session->state)
     {
-        /* conductor->deleteDetachedSegments(correlation_id, recording_id, session); */
+        if (aeron_archive_conductor_delete_detached_segments(
+                session->conductor, correlation_id, recording_id, session) < 0)
+        {
+            aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+        }
     }
 }
 
@@ -960,7 +991,11 @@ void aeron_archive_control_session_on_purge_segments(
     aeron_archive_control_session_attempt_to_activate(session);
     if (AERON_ARCHIVE_CONTROL_SESSION_STATE_ACTIVE == session->state)
     {
-        /* conductor->purgeSegments(correlation_id, recording_id, new_start_position, session); */
+        if (aeron_archive_conductor_purge_segments(
+                session->conductor, correlation_id, recording_id, new_start_position, session) < 0)
+        {
+            aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+        }
     }
 }
 
@@ -970,7 +1005,11 @@ void aeron_archive_control_session_on_attach_segments(
     aeron_archive_control_session_attempt_to_activate(session);
     if (AERON_ARCHIVE_CONTROL_SESSION_STATE_ACTIVE == session->state)
     {
-        /* conductor->attachSegments(correlation_id, recording_id, session); */
+        if (aeron_archive_conductor_attach_segments(
+                session->conductor, correlation_id, recording_id, session) < 0)
+        {
+            aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+        }
     }
 }
 
@@ -981,7 +1020,11 @@ void aeron_archive_control_session_on_migrate_segments(
     aeron_archive_control_session_attempt_to_activate(session);
     if (AERON_ARCHIVE_CONTROL_SESSION_STATE_ACTIVE == session->state)
     {
-        /* conductor->migrateSegments(correlation_id, src_recording_id, dst_recording_id, session); */
+        if (aeron_archive_conductor_migrate_segments(
+                session->conductor, correlation_id, src_recording_id, dst_recording_id, session) < 0)
+        {
+            aeron_archive_control_session_send_error_response(session, correlation_id, 0, aeron_errmsg());
+        }
     }
 }
 

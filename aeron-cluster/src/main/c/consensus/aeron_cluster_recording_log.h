@@ -155,8 +155,12 @@ int  aeron_cluster_recording_log_invalidate_latest_snapshot(
  * Invalidate the entry at the given 0-based index.
  * Used in recovery when a mid-log snapshot is replaced.
  */
-int  aeron_cluster_recording_log_invalidate_entry_at(
-    aeron_cluster_recording_log_t *log, int index);
+/**
+ * Invalidate entry by sorted-view index.
+ * Mirrors Java RecordingLog.invalidateEntry(int index).
+ */
+int  aeron_cluster_recording_log_invalidate_entry(
+    aeron_cluster_recording_log_t *log, int sorted_index);
 
 /* -----------------------------------------------------------------------
  * Reads / queries

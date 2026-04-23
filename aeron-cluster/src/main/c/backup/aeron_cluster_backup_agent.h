@@ -46,6 +46,14 @@ typedef enum aeron_cluster_backup_state_en
 }
 aeron_cluster_backup_state_t;
 
+/* Mirrors Java ClusterBackup.Configuration.ReplayStart */
+typedef enum aeron_cluster_backup_replay_start_en
+{
+    AERON_CLUSTER_BACKUP_REPLAY_START_BEGINNING       = 0,
+    AERON_CLUSTER_BACKUP_REPLAY_START_LATEST_SNAPSHOT  = 1
+}
+aeron_cluster_backup_replay_start_t;
+
 #define AERON_CLUSTER_BACKUP_MARK_FILE_UPDATE_INTERVAL_MS INT64_C(1000)
 #define AERON_CLUSTER_BACKUP_SLOW_TICK_INTERVAL_MS        INT64_C(10)
 #define AERON_CLUSTER_BACKUP_MAX_ENDPOINTS                20
@@ -297,6 +305,39 @@ int aeron_cluster_backup_launch(
     aeron_cluster_backup_context_t *ctx,
     const char *cluster_dir,
     int64_t now_ms);
+
+/**
+ * Validate whether a cluster member is acceptable as a log source.
+ * Mirrors Java LogSourceValidator.isAcceptable().
+ *
+ * @param source_type      LEADER, FOLLOWER, or ANY.
+ * @param leader_member_id current leader member id (-1 if unknown).
+ * @param member_id        member id of the candidate source.
+ * @return true if the member is acceptable for the given source type.
+ */
+bool aeron_cluster_backup_log_source_is_acceptable(
+    aeron_cluster_backup_source_type_t source_type,
+    int32_t leader_member_id,
+    int32_t member_id);
+
+/**
+ * Compute the replay start position — mirrors Java ClusterBackupAgent.replayStartPosition().
+ *
+ * @param last_term           last term entry from recording log (may be NULL).
+ * @param snapshots           array of retrieved snapshots.
+ * @param snapshot_count      number of snapshots.
+ * @param replay_start        BEGINNING or LATEST_SNAPSHOT.
+ * @param get_stop_position   callback to get stop position for a recording (may be NULL when last_term is NULL).
+ * @param archive_clientd     opaque passed to get_stop_position.
+ * @return replay start position, or AERON_NULL_VALUE (-1) if none.
+ */
+int64_t aeron_cluster_backup_agent_replay_start_position(
+    const aeron_cluster_recording_log_entry_t *last_term,
+    const aeron_cluster_backup_snapshot_t *snapshots,
+    int snapshot_count,
+    aeron_cluster_backup_replay_start_t replay_start,
+    int64_t (*get_stop_position)(void *clientd, int64_t recording_id),
+    void *archive_clientd);
 
 #ifdef __cplusplus
 }
